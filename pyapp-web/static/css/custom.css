@@ -1,0 +1,24 @@
+/* Дополнительные стили проекта */
+
+/* Пунктирная рамка для drag'n'drop */
+#dropZone {
+  cursor: pointer;
+  transition: background-color 0.2s ease-in-out;
+  margin-bottom: 0 !important;
+}
+
+#dropZone.border-dashed {
+  border-style: dashed !important;
+}
+
+#previewContainer img {
+  padding: 0.5rem;
+}
+
+#previewContainer .card-body {
+  padding: 1rem 1.25rem;
+}
+
+#uploadForm {
+  margin-bottom: 15px;
+}

@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="ru" data-bs-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Сброс пароля — Food-Tracker</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootswatch@5.3.3/dist/darkly/bootstrap.min.css" rel="stylesheet" />
+  </head>
+  <body class="d-flex align-items-center vh-100">
+    <div class="container" style="max-width: 420px;">
+      <h3 class="mb-4 text-center">Забыли пароль?</h3>
+      {% if message %}
+      <div class="alert alert-info">{{ message }}</div>
+      {% endif %}
+      <form method="post" class="card p-4 bg-dark border-secondary" novalidate>
+        <div class="mb-3">
+          <label for="email" class="form-label">Email</label>
+          <input type="email" class="form-control" id="email" name="email" required />
+        </div>
+        <button type="submit" class="btn btn-primary w-100">Получить ссылку</button>
+      </form>
+      <p class="mt-3 text-center">
+        <a href="{{ url_for('login') }}" class="link-light">Вернуться к входу</a>
+      </p>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="ru" data-bs-theme="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>История загрузок — Food-Tracker</title>
+    <link
+      href="https://cdn.jsdelivr.net/npm/bootswatch@5.3.3/dist/darkly/bootstrap.min.css"
+      rel="stylesheet"
+    />
+  </head>
+  <body>
+    <!-- Навигация -->
+    <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+      <div class="container">
+        <a class="navbar-brand" href="{{ url_for('index') }}">Food-Tracker</a>
+        <div class="collapse navbar-collapse">
+          <ul class="navbar-nav ms-auto">
+            <li class="nav-item">
+              <a class="nav-link active" aria-current="page" href="#">История&nbsp;запросов</a>
+            </li>
+            <li class="nav-item">
+              <a class="nav-link" href="{{ url_for('logout') }}">Выйти</a>
+            </li>
+          </ul>
+        </div>
+      </div>
+    </nav>
+
+    <div class="container py-5">
+      <h3 class="mb-4 text-center">История ваших изображений</h3>
+
+      {% if uploads %}
+      <div class="table-responsive">
+        <table class="table table-dark table-striped align-middle">
+          <thead>
+            <tr>
+              <th scope="col" class="text-center" style="width: 140px;">Превью</th>
+              <th scope="col" class="text-center">Дата/время</th>
+              <th scope="col" class="text-center" style="width: 160px;">Действия</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for img in uploads %}
+            <tr>
+              <td class="text-center">
+                <a href="{{ url_for('use_upload', upload_id=img.id) }}" title="Использовать">
+                  <img
+                    src="{{ url_for('uploaded_file', filename=img.filename) }}"
+                    alt="preview"
+                    class="img-thumbnail"
+                    style="max-width: 140px;"
+                  />
+                </a>
+              </td>
+              <td class="text-center">{{ img.created_at|ru_dt }}</td>
+              <td class="text-center">
+                <div class="btn-group" role="group">
+                  <a
+                    href="{{ url_for('use_upload', upload_id=img.id) }}"
+                    class="btn btn-sm btn-outline-light"
+                    title="Использовать в форме"
+                    >Использовать</a
+                  >
+                  <a
+                    href="{{ url_for('delete_upload', upload_id=img.id) }}"
+                    class="btn btn-sm btn-outline-light"
+                    title="Удалить изображение"
+                    onclick="return confirm('Удалить изображение?');"
+                    >Удалить</a
+                  >
+                </div>
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <p class="text-center text-muted">Загруженных изображений пока нет.</p>
+      {% endif %}
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+  </body>
+</html>

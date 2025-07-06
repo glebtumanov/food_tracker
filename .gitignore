@@ -186,3 +186,5 @@ pyapp-web/instance/*
 
 # Configuration files
 chain-server/temp_images/
+
+test-chains.ipynb

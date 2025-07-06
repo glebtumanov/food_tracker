@@ -1,0 +1,17 @@
+# Конфигурация LangServe сервера для анализа изображений еды
+
+# Настройки сервера
+server:
+  host: "0.0.0.0"
+  port: 8000
+  log_level: "info"
+  title: "Food Image Analyzer API"
+  description: "API для анализа изображений еды с помощью LangChain и OpenAI"
+  version: "1.0.0"
+
+# Настройки OpenAI
+openai:
+  model: "gpt-4o"
+  temperature: 0.1
+  max_tokens: 1000
+  timeout: 60

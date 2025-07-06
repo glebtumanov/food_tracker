@@ -1,0 +1,40 @@
+# Пример конфигурации веб-приложения Food Tracker
+# Скопируйте этот файл в config.yaml и настройте под свои нужды
+
+# Настройки сервера
+server:
+  host: "0.0.0.0"          # Адрес для прослушивания
+  port: 5001               # Порт сервера
+  debug: true              # Режим отладки (false для продакшена)
+
+# Настройки базы данных
+database:
+  url: "sqlite:///app.db"  # URL базы данных
+  track_modifications: false
+
+# Настройки загрузки файлов
+upload:
+  folder: "uploads"        # Папка для загруженных файлов
+  max_content_length_mb: 16  # Максимальный размер файла в MB
+  allowed_extensions: ["png", "jpg", "jpeg", "gif", "webp"]
+
+# Настройки безопасности
+security:
+  remember_cookie_duration_days: 7  # Время жизни cookie "запомнить меня"
+  secret_key: null         # Секретный ключ (null = автогенерация)
+
+# Настройки почты
+mail:
+  server: "smtp.gmail.com"     # SMTP сервер
+  port: 587                    # Порт SMTP
+  username: "your-email@gmail.com"  # Логин
+  password: "your-app-password"     # Пароль приложения
+  default_sender: "noreply@foodtracker.com"  # Отправитель по умолчанию
+  use_tls: true               # Использовать TLS
+  use_ssl: false              # Использовать SSL
+
+# Настройки интеграции с chain-server
+chain_server:
+  url: "http://localhost:8000"     # URL chain-сервера
+  analyze_endpoint: "/analyze"     # Endpoint для анализа
+  timeout: 30                      # Таймаут запроса в секундах

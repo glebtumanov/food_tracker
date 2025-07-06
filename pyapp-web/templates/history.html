@@ -36,7 +36,8 @@
           <thead>
             <tr>
               <th scope="col" class="text-center" style="width: 140px;">Превью</th>
-              <th scope="col" class="text-center">Дата/время</th>
+              <th scope="col" class="text-center" style="width: 15%;">Дата/время</th>
+              <th scope="col" class="text-center" style="width: 65%;">Ингредиенты</th>
               <th scope="col" class="text-center" style="width: 160px;">Действия</th>
             </tr>
           </thead>
@@ -54,6 +55,13 @@
                 </a>
               </td>
               <td class="text-center">{{ img.created_at|ru_dt }}</td>
+              <td class="text-start small">
+                {% if img.ingredients %}
+                  {{ img.ingredients|dishes_only|replace('**', '')|replace('\n', '<br>')|safe }}
+                {% else %}
+                  <span class="text-muted">Анализ не проводился</span>
+                {% endif %}
+              </td>
               <td class="text-center">
                 <div class="btn-group" role="group">
                   <a

@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import os
 import uuid
+import yaml
+import base64
+import requests
 from pathlib import Path
-from typing import Final, Set
+from typing import Final, Set, Dict, Any
 
 from flask import Flask, jsonify, redirect, render_template, request, send_from_directory, url_for, session
 from werkzeug.utils import secure_filename
@@ -30,9 +33,43 @@ from sqlalchemy import inspect, text as sa_text
 # Конфигурация
 # ----------------------------------------------------------------------------
 
-UPLOAD_FOLDER: Final[str] = "uploads"
-ALLOWED_EXTENSIONS: Final[Set[str]] = {"png", "jpg", "jpeg", "gif", "webp"}
-MAX_CONTENT_LENGTH: Final[int] = 16 * 1024 * 1024  # 16 MB
+def load_config(config_path: str = "config.yaml") -> Dict[str, Any]:
+    """Загружает конфигурацию из YAML файла."""
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            config = yaml.safe_load(f)
+        return config
+    except FileNotFoundError:
+        # Возвращаем конфигурацию по умолчанию
+        return {
+            "server": {"host": "0.0.0.0", "port": 5001, "debug": True},
+            "database": {"url": "sqlite:///app.db", "track_modifications": False},
+            "upload": {
+                "folder": "uploads",
+                "max_content_length_mb": 16,
+                "allowed_extensions": ["png", "jpg", "jpeg", "gif", "webp"]
+            },
+            "security": {"remember_cookie_duration_days": 7, "secret_key": None},
+            "mail": {
+                "server": "smtp.example.com",
+                "port": 465,
+                "username": "username",
+                "password": "password",
+                "default_sender": "noreply@example.com",
+                "use_tls": True,
+                "use_ssl": True
+            }
+        }
+    except yaml.YAMLError as e:
+        raise ValueError(f"Ошибка чтения конфигурации: {e}")
+
+# Загружаем конфигурацию
+config = load_config()
+
+# Константы из конфигурации
+UPLOAD_FOLDER: Final[str] = config["upload"]["folder"]
+ALLOWED_EXTENSIONS: Final[Set[str]] = set(config["upload"]["allowed_extensions"])
+MAX_CONTENT_LENGTH: Final[int] = config["upload"]["max_content_length_mb"] * 1024 * 1024
 
 # ----------------------------------------------------------------------------
 # Расширения
@@ -62,8 +99,8 @@ class User(db.Model, UserMixin):
 class Upload(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     filename = db.Column(db.String(260), nullable=False)
-    # Фейковый распознанный текст (пока заполнено заглушкой)
-    text = db.Column(db.String(255), default="", nullable=False)
+    # Список ингредиентов в формате markdown
+    ingredients = db.Column(db.Text, default="", nullable=False)
     # Контрольная сумма файла — пригодится для поиска дубликатов
     crc = db.Column(db.String(16), nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
@@ -136,6 +173,89 @@ def allowed_file(filename: str) -> bool:
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
 
 
+def analyze_image_with_chain_server(image_path: str) -> Dict[str, Any]:
+    """Анализирует изображение с помощью chain-сервера."""
+    chain_config = config.get("chain_server", {})
+
+    chain_url = chain_config.get("url", "http://localhost:8000")
+    analyze_endpoint = chain_config.get("analyze_endpoint", "/analyze")
+    timeout = chain_config.get("timeout", 30)
+
+    full_url = f"{chain_url}{analyze_endpoint}"
+
+    try:
+        # Проверяем, существует ли файл
+        if not os.path.exists(image_path):
+            return {
+                "error": f"Файл изображения не найден: {image_path}",
+                "dishes": [],
+                "total_weight": 0,
+                "confidence": 0.0
+            }
+
+        # Кодируем изображение в base64
+        with open(image_path, "rb") as image_file:
+            image_base64 = base64.b64encode(image_file.read()).decode('utf-8')
+
+        # Подготавливаем запрос
+        payload = {
+            "image_base64": image_base64,
+            "filename": Path(image_path).name
+        }
+
+        # Отправляем запрос к chain-серверу
+        response = requests.post(
+            full_url,
+            json=payload,
+            timeout=timeout,
+            headers={"Content-Type": "application/json"}
+        )
+
+        if response.status_code == 200:
+            result = response.json()
+            # Убираем поле error если оно None (успешный анализ)
+            if result.get("error") is None:
+                result.pop("error", None)
+            return result
+        else:
+            error_msg = f"Ошибка chain-сервера: {response.status_code}"
+            try:
+                error_data = response.json()
+                if "detail" in error_data:
+                    error_msg = error_data["detail"]
+            except:
+                pass
+
+            return {
+                "error": error_msg,
+                "dishes": [],
+                "total_weight": 0,
+                "confidence": 0.0
+            }
+
+    except requests.exceptions.ConnectionError:
+        return {
+            "error": "Не удается подключиться к серверу анализа. Убедитесь, что chain-server запущен.",
+            "dishes": [],
+            "total_weight": 0,
+            "confidence": 0.0
+        }
+    except requests.exceptions.Timeout:
+        return {
+            "error": "Превышено время ожидания ответа от сервера анализа.",
+            "dishes": [],
+            "total_weight": 0,
+            "confidence": 0.0
+        }
+    except Exception as e:
+        return {
+            "error": f"Ошибка при обращении к серверу анализа: {str(e)}",
+            "dishes": [],
+            "total_weight": 0,
+            "confidence": 0.0
+        }
+
+
 # ----------------------------------------------------------------------------
 # Фильтры Jinja
 # ----------------------------------------------------------------------------
@@ -158,6 +278,42 @@ def _ru_weekday(value: datetime) -> str:  # pragma: no cover
 def _format_datetime_ru(value: datetime) -> Markup:  # pragma: no cover
     """Форматирует дату/время как '25.06.2025 (17:55)<br>Среда'."""
     return Markup(f"{value.strftime('%d.%m.%Y (%H:%M)')}<br>{_ru_weekday(value)}")
+
+
+def _extract_dishes_only(ingredients_text: str) -> str:  # pragma: no cover
+    """Извлекает только список блюд из полного результата анализа."""
+    if not ingredients_text:
+        return ""
+
+    lines = ingredients_text.split('\n')
+    dishes_section = []
+    found_dishes = False
+
+    for line in lines:
+        # Ищем начало списка блюд
+        if "Обнаруженные блюда:" in line:
+            found_dishes = True
+            continue
+
+        # Если нашли секцию блюд, собираем все строки до конца
+        if found_dishes:
+            # Пропускаем пустые строки в начале секции блюд
+            if not dishes_section and not line.strip():
+                continue
+            dishes_section.append(line)
+
+    # Если секция блюд найдена, возвращаем её
+    if dishes_section:
+        return '\n'.join(dishes_section).strip()
+
+    # Если секция не найдена, пробуем найти строки, начинающиеся с цифры
+    dish_lines = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped and (stripped[0].isdigit() or stripped.startswith('_')):
+            dish_lines.append(line)
+
+    return '\n'.join(dish_lines) if dish_lines else ingredients_text
 
 # ----------------------------------------------------------------------------
 # Фабрика приложения
@@ -183,21 +339,30 @@ def _get_or_create_secret_key() -> str:
 
 def create_app() -> Flask:
     app = Flask(__name__)
+
+    # Настройки из конфигурации
+    database_config = config["database"]
+    upload_config = config["upload"]
+    security_config = config["security"]
+    mail_config = config["mail"]
+
     app.config.update(
-        UPLOAD_FOLDER=UPLOAD_FOLDER,
-        MAX_CONTENT_LENGTH=MAX_CONTENT_LENGTH,
+        UPLOAD_FOLDER=upload_config["folder"],
+        MAX_CONTENT_LENGTH=upload_config["max_content_length_mb"] * 1024 * 1024,
         # Безопасность и БД
-        SECRET_KEY=os.getenv("SECRET_KEY", _get_or_create_secret_key()),
-        SQLALCHEMY_DATABASE_URI=os.getenv("DATABASE_URL", "sqlite:///app.db"),
-        SQLALCHEMY_TRACK_MODIFICATIONS=False,
-        # Настройки cookie «Запомнить меня» на 7 дней
-        REMEMBER_COOKIE_DURATION=timedelta(days=7),
+        SECRET_KEY=os.getenv("SECRET_KEY", security_config.get("secret_key") or _get_or_create_secret_key()),
+        SQLALCHEMY_DATABASE_URI=os.getenv("DATABASE_URL", database_config["url"]),
+        SQLALCHEMY_TRACK_MODIFICATIONS=database_config["track_modifications"],
+        # Настройки cookie «Запомнить меня»
+        REMEMBER_COOKIE_DURATION=timedelta(days=security_config["remember_cookie_duration_days"]),
         # Настройки почты (можно переопределить через переменные среды)
-        MAIL_SERVER=os.getenv("MAIL_SERVER", "smtp.example.com"),
-        MAIL_PORT=int(os.getenv("MAIL_PORT", 465)),
-        MAIL_USERNAME=os.getenv("MAIL_USERNAME", "username"),
-        MAIL_PASSWORD=os.getenv("MAIL_PASSWORD", "password"),
-        MAIL_DEFAULT_SENDER=os.getenv("MAIL_DEFAULT_SENDER", "noreply@example.com"),
+        MAIL_SERVER=os.getenv("MAIL_SERVER", mail_config["server"]),
+        MAIL_PORT=int(os.getenv("MAIL_PORT", mail_config["port"])),
+        MAIL_USERNAME=os.getenv("MAIL_USERNAME", mail_config["username"]),
+        MAIL_PASSWORD=os.getenv("MAIL_PASSWORD", mail_config["password"]),
+        MAIL_DEFAULT_SENDER=os.getenv("MAIL_DEFAULT_SENDER", mail_config["default_sender"]),
+        MAIL_USE_TLS=mail_config.get("use_tls", True),
+        MAIL_USE_SSL=mail_config.get("use_ssl", True),
     )
 
     # Инициализируем расширения
@@ -207,6 +372,7 @@ def create_app() -> Flask:
     # Регистрируем фильтры
     app.add_template_filter(_ru_weekday, name="ru_weekday")
     app.add_template_filter(_format_datetime_ru, name="ru_dt")
+    app.add_template_filter(_extract_dishes_only, name="dishes_only")
 
     # Убедимся, что каталог для загрузок существует
     Path(app.config["UPLOAD_FOLDER"]).mkdir(parents=True, exist_ok=True)
@@ -221,9 +387,15 @@ def create_app() -> Flask:
 
         upload_cols = {col["name"] for col in inspector.get_columns("upload")}
         alter_stmts: list[str] = []
-        if "text" not in upload_cols:
-            # DEFAULT '', иначе ошибка из-за NOT NULL существующих строк
-            alter_stmts.append("ALTER TABLE upload ADD COLUMN text VARCHAR(255) NOT NULL DEFAULT '';")
+
+        # Миграция: переименование text → ingredients и изменение типа
+        if "text" in upload_cols and "ingredients" not in upload_cols:
+            alter_stmts.append("ALTER TABLE upload ADD COLUMN ingredients TEXT NOT NULL DEFAULT '';")
+            alter_stmts.append("UPDATE upload SET ingredients = text;")
+            # В SQLite нельзя удалить колонку напрямую, оставляем text
+        elif "ingredients" not in upload_cols:
+            alter_stmts.append("ALTER TABLE upload ADD COLUMN ingredients TEXT NOT NULL DEFAULT '';")
+
         if "crc" not in upload_cols:
             alter_stmts.append("ALTER TABLE upload ADD COLUMN crc VARCHAR(16) NOT NULL DEFAULT '';")
 
@@ -281,7 +453,7 @@ def create_app() -> Flask:
             filename=unique_name,
             user_id=current_user.id,
             crc=crc_value,
-            text="",  # пока заглушка
+            ingredients="",  # будет заполнено после анализа
         )
         db.session.add(upload_record)
         db.session.commit()
@@ -289,12 +461,141 @@ def create_app() -> Flask:
         file_url = url_for("uploaded_file", filename=unique_name, _external=False)
         # Запоминаем в сессии, чтобы отображать после переходов по сайту
         session["last_image"] = file_url
-        return jsonify({"url": file_url})
+        return jsonify({"url": file_url, "upload_id": upload_record.id})
 
     @app.get("/uploads/<path:filename>")
     def uploaded_file(filename: str):  # type: ignore
         """Отдаёт сохранённое изображение."""
         return send_from_directory(app.config["UPLOAD_FOLDER"], filename)
+
+    @app.post("/save_analysis")
+    @login_required
+    def save_analysis():  # type: ignore
+        """Сохраняет результат анализа изображения."""
+        if not current_user.is_confirmed:
+            return jsonify({"error": "Подтвердите email"}), 403
+
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "Нет данных"}), 400
+
+        upload_id = data.get("upload_id")
+        ingredients = data.get("ingredients", "")
+
+        if not upload_id:
+            return jsonify({"error": "ID загрузки не указан"}), 400
+
+        upload_record = Upload.query.get_or_404(upload_id)
+        if upload_record.user_id != current_user.id:
+            return jsonify({"error": "Доступ запрещен"}), 403
+
+        upload_record.ingredients = ingredients
+        db.session.commit()
+
+        return jsonify({"success": True})
+
+    @app.get("/get_analysis/<path:filename>")
+    @login_required
+    def get_analysis(filename: str):  # type: ignore
+        """Получает сохраненный анализ по имени файла."""
+        upload_record = Upload.query.filter_by(
+            filename=filename,
+            user_id=current_user.id
+        ).first_or_404()
+
+        return jsonify({
+            "ingredients": upload_record.ingredients,
+            "upload_id": upload_record.id
+        })
+
+    @app.post("/analyze_image")
+    @login_required
+    def analyze_image():  # type: ignore
+        """Анализирует изображение с помощью chain-сервера."""
+        try:
+            if not current_user.is_confirmed:
+                return jsonify({"error": "Подтвердите email"}), 403
+
+            data = request.get_json()
+            if not data:
+                return jsonify({"error": "Нет данных"}), 400
+
+            upload_id = data.get("upload_id")
+            if not upload_id:
+                return jsonify({"error": "ID загрузки не указан"}), 400
+
+            # Находим запись о загрузке
+            upload_record = Upload.query.get_or_404(upload_id)
+            if upload_record.user_id != current_user.id:
+                return jsonify({"error": "Доступ запрещен"}), 403
+
+            # Путь к файлу
+            image_path = os.path.join(app.config["UPLOAD_FOLDER"], upload_record.filename)
+
+            if not os.path.exists(image_path):
+                return jsonify({"error": "Файл изображения не найден"}), 404
+
+            # Сначала проверяем, работает ли chain-сервер
+            chain_config = config.get("chain_server", {})
+            chain_url = chain_config.get("url", "http://localhost:8000")
+
+            try:
+                health_response = requests.get(f"{chain_url}/health", timeout=5)
+                if health_response.status_code == 200:
+                    health_data = health_response.json()
+                    if not health_data.get("analyzer_ready"):
+                        return jsonify({"error": "Анализатор не готов"}), 503
+                else:
+                    return jsonify({"error": "Chain-сервер недоступен"}), 503
+            except Exception:
+                return jsonify({"error": "Chain-сервер недоступен"}), 503
+
+            # Анализируем изображение через chain-сервер
+            analysis_result = analyze_image_with_chain_server(image_path)
+
+            # Проверяем результат анализа
+            error_msg = analysis_result.get("error")
+            if not error_msg:  # Если error пустой, None или False
+                # Формируем текст ингредиентов в markdown формате
+                dishes = analysis_result.get("dishes", [])
+                total_weight = analysis_result.get("total_weight", 0)
+                confidence = analysis_result.get("confidence", 0)
+
+                ingredients_text = f"**Результат анализа изображения:**\n\n"
+                ingredients_text += f"**Общая масса:** {total_weight} г\n"
+                ingredients_text += f"**Уверенность:** {confidence:.1%}\n\n"
+                ingredients_text += "**Обнаруженные блюда:**\n\n"
+
+                for i, dish in enumerate(dishes, 1):
+                    name = dish.get("name", "Неизвестное блюдо")
+                    weight = dish.get("weight_grams", 0)
+                    description = dish.get("description", "")
+
+                    ingredients_text += f"{i}. **{name}** - {weight} г\n"
+                    if description:
+                        ingredients_text += f"   _{description}_\n"
+                    ingredients_text += "\n"
+
+                # Сохраняем в базу данных
+                upload_record.ingredients = ingredients_text
+                db.session.commit()
+
+                return jsonify({
+                    "success": True,
+                    "analysis": analysis_result,
+                    "formatted_text": ingredients_text
+                })
+            else:
+                return jsonify({
+                    "success": False,
+                    "error": error_msg
+                }), 500
+
+        except Exception as e:
+            return jsonify({
+                "success": False,
+                "error": f"Внутренняя ошибка сервера: {str(e)}"
+            }), 500
 
     # Обработка 413 — превышен размер файла
     @app.errorhandler(413)
@@ -407,7 +708,7 @@ def create_app() -> Flask:
         """Таблица с ранее загруженными изображениями пользователя."""
         uploads = (
             Upload.query.filter_by(user_id=current_user.id)
-            .order_by(Upload.created_at.asc())
+            .order_by(Upload.created_at.desc())
             .all()
         )
         return render_template("history.html", uploads=uploads)
@@ -502,4 +803,9 @@ def create_app() -> Flask:
 
 if __name__ == "__main__":
     # Для локальной отладки. В проде вместо debug=True — нормальный сервер.
-    create_app().run(host="0.0.0.0", port=5001, debug=True)
+    server_config = config["server"]
+    create_app().run(
+        host=server_config["host"],
+        port=server_config["port"],
+        debug=server_config["debug"]
+    )

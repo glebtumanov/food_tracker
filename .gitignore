@@ -183,3 +183,6 @@ pyapp-web/uploads/*
 pyapp-web/instance/*
 !pyapp-web/instance/
 !pyapp-web/instance/.gitkeep
+
+# Configuration files
+chain-server/temp_images/

@@ -159,9 +159,9 @@ async function loadSavedAnalysis(filename) {
         currentUploadId = data.upload_id;
       }
 
-      if (data.ingredients && data.ingredients.trim()) {
+      if (data.ingredients_md && data.ingredients_md.trim()) {
         // Преобразуем markdown в HTML
-        const htmlText = formatMarkdownToHtml(data.ingredients);
+        const htmlText = formatMarkdownToHtml(data.ingredients_md);
 
         if (analysisResult) {
           analysisResult.innerHTML = htmlText;
@@ -178,7 +178,7 @@ async function loadSavedAnalysis(filename) {
   }
 }
 
-async function saveAnalysis(ingredients) {
+async function saveAnalysis(ingredients_md, ingredients_json = null) {
   if (!currentUploadId) {
     console.error("Нет ID загрузки для сохранения");
     return;
@@ -192,7 +192,8 @@ async function saveAnalysis(ingredients) {
       },
       body: JSON.stringify({
         upload_id: currentUploadId,
-        ingredients: ingredients
+        ingredients_md: ingredients_md,
+        ingredients_json: ingredients_json
       }),
     });
 
@@ -218,15 +219,14 @@ function formatMarkdownToHtml(markdownText) {
 function renderAnalysisResult(analysis) {
   if (!analysisResult) return;
 
-  const { dishes, total_weight, confidence } = analysis;
+  const { dishes, confidence } = analysis;
 
   let html = '<div class="analysis-result">';
   html += '<h5 class="mb-3">🍽️ Результат анализа</h5>';
 
   // Общая информация
   html += '<div class="row mb-3">';
-  html += `<div class="col-md-6"><strong>Общая масса:</strong> ${total_weight} г</div>`;
-  html += `<div class="col-md-6"><strong>Уверенность:</strong> ${(confidence * 100).toFixed(1)}%</div>`;
+  html += `<div class="col-md-12"><strong>Уверенность:</strong> ${(confidence * 100).toFixed(1)}%</div>`;
   html += '</div>';
 
   // Список блюд
@@ -236,17 +236,35 @@ function renderAnalysisResult(analysis) {
 
     dishes.forEach((dish, index) => {
       const name = dish.name || 'Неизвестное блюдо';
-      const weight = dish.weight_grams || 0;
+      const name_en = dish.name_en || '';
       const description = dish.description || '';
+      const description_en = dish.description_en || '';
+      const unit_type = dish.unit_type || '';
+      const amount = dish.amount || 0;
 
       html += '<div class="list-group-item">';
       html += `<div class="d-flex w-100 justify-content-between">`;
-      html += `<h6 class="mb-1">${index + 1}. ${name}</h6>`;
-      html += `<small><strong>${weight} г</strong></small>`;
+      html += `<h6 class="mb-1">${index + 1}. ${name}`;
+      if (name_en) {
+        html += ` <em class="text-muted">${name_en}</em>`;
+      }
+      html += '</h6>';
+
+      if (unit_type && amount) {
+        if (unit_type === 'штук') {
+          html += `<small><strong>${amount.toFixed(0)} ${unit_type}</strong></small>`;
+        } else {
+          html += `<small><strong>${amount} ${unit_type}</strong></small>`;
+        }
+      }
       html += '</div>';
 
       if (description) {
-        html += `<p class="mb-1 text-muted">${description}</p>`;
+        html += `<p class="mb-1 text-muted">${description}`;
+        if (description_en) {
+          html += ` <em>${description_en}</em>`;
+        }
+        html += '</p>';
       }
       html += '</div>';
     });

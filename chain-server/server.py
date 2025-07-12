@@ -105,7 +105,6 @@ class ImageAnalysisRequest(BaseModel):
 class ImageAnalysisResponse(BaseModel):
     """Модель ответа с результатами анализа."""
     dishes: list[Dict[str, Any]]
-    total_weight: int
     confidence: float
     error: str | None = None
 

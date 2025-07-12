@@ -56,8 +56,8 @@
               </td>
               <td class="text-center">{{ img.created_at|ru_dt }}</td>
               <td class="text-start small">
-                {% if img.ingredients %}
-                  {{ img.ingredients|dishes_only|replace('**', '')|replace('\n', '<br>')|safe }}
+                {% if img.ingredients_md %}
+                  {{ img.ingredients_md|dishes_only|replace('**', '')|replace('\n', '<br>')|safe }}
                 {% else %}
                   <span class="text-muted">Анализ не проводился</span>
                 {% endif %}

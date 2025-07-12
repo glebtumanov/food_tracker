@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import uuid
 import yaml
+import json
 import base64
 import requests
 from pathlib import Path
@@ -27,7 +28,7 @@ from flask_login import (
 from flask_sqlalchemy import SQLAlchemy
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from werkzeug.security import check_password_hash, generate_password_hash
-from sqlalchemy import inspect, text as sa_text
+from sqlalchemy import inspect, text as sa_text, select
 
 # ----------------------------------------------------------------------------
 # Конфигурация
@@ -99,8 +100,10 @@ class User(db.Model, UserMixin):
 class Upload(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     filename = db.Column(db.String(260), nullable=False)
-    # Список ингредиентов в формате markdown
-    ingredients = db.Column(db.Text, default="", nullable=False)
+    # Результат анализа в формате markdown
+    ingredients_md = db.Column(db.Text, default="", nullable=False)
+    # Результат анализа в формате JSON от модели
+    ingredients_json = db.Column(db.Text, nullable=True)
     # Контрольная сумма файла — пригодится для поиска дубликатов
     crc = db.Column(db.String(16), nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
@@ -108,7 +111,7 @@ class Upload(db.Model):
 
 @login_manager.user_loader  # type: ignore
 def load_user(user_id: str):
-    return User.query.get(int(user_id))
+    return db.session.get(User, int(user_id))
 
 # ----------------------------------------------------------------------------
 # Почтовая логика
@@ -189,7 +192,6 @@ def analyze_image_with_chain_server(image_path: str) -> Dict[str, Any]:
             return {
                 "error": f"Файл изображения не найден: {image_path}",
                 "dishes": [],
-                "total_weight": 0,
                 "confidence": 0.0
             }
 
@@ -213,6 +215,7 @@ def analyze_image_with_chain_server(image_path: str) -> Dict[str, Any]:
 
         if response.status_code == 200:
             result = response.json()
+            print(json.dumps(result, indent=4, ensure_ascii=False))
             # Убираем поле error если оно None (успешный анализ)
             if result.get("error") is None:
                 result.pop("error", None)
@@ -229,7 +232,6 @@ def analyze_image_with_chain_server(image_path: str) -> Dict[str, Any]:
             return {
                 "error": error_msg,
                 "dishes": [],
-                "total_weight": 0,
                 "confidence": 0.0
             }
 
@@ -237,21 +239,18 @@ def analyze_image_with_chain_server(image_path: str) -> Dict[str, Any]:
         return {
             "error": "Не удается подключиться к серверу анализа. Убедитесь, что chain-server запущен.",
             "dishes": [],
-            "total_weight": 0,
             "confidence": 0.0
         }
     except requests.exceptions.Timeout:
         return {
             "error": "Превышено время ожидания ответа от сервера анализа.",
             "dishes": [],
-            "total_weight": 0,
             "confidence": 0.0
         }
     except Exception as e:
         return {
             "error": f"Ошибка при обращении к серверу анализа: {str(e)}",
             "dishes": [],
-            "total_weight": 0,
             "confidence": 0.0
         }
 
@@ -280,12 +279,12 @@ def _format_datetime_ru(value: datetime) -> Markup:  # pragma: no cover
     return Markup(f"{value.strftime('%d.%m.%Y (%H:%M)')}<br>{_ru_weekday(value)}")
 
 
-def _extract_dishes_only(ingredients_text: str) -> str:  # pragma: no cover
+def _extract_dishes_only(ingredients_md_text: str) -> str:  # pragma: no cover
     """Извлекает только список блюд из полного результата анализа."""
-    if not ingredients_text:
+    if not ingredients_md_text:
         return ""
 
-    lines = ingredients_text.split('\n')
+    lines = ingredients_md_text.split('\n')
     dishes_section = []
     found_dishes = False
 
@@ -313,7 +312,7 @@ def _extract_dishes_only(ingredients_text: str) -> str:  # pragma: no cover
         if stripped and (stripped[0].isdigit() or stripped.startswith('_')):
             dish_lines.append(line)
 
-    return '\n'.join(dish_lines) if dish_lines else ingredients_text
+    return '\n'.join(dish_lines) if dish_lines else ingredients_md_text
 
 # ----------------------------------------------------------------------------
 # Фабрика приложения
@@ -388,13 +387,15 @@ def create_app() -> Flask:
         upload_cols = {col["name"] for col in inspector.get_columns("upload")}
         alter_stmts: list[str] = []
 
-        # Миграция: переименование text → ingredients и изменение типа
-        if "text" in upload_cols and "ingredients" not in upload_cols:
-            alter_stmts.append("ALTER TABLE upload ADD COLUMN ingredients TEXT NOT NULL DEFAULT '';")
-            alter_stmts.append("UPDATE upload SET ingredients = text;")
-            # В SQLite нельзя удалить колонку напрямую, оставляем text
-        elif "ingredients" not in upload_cols:
-            alter_stmts.append("ALTER TABLE upload ADD COLUMN ingredients TEXT NOT NULL DEFAULT '';")
+        # Миграция: добавляем новые поля ingredients_md и ingredients_json
+        if "ingredients_md" not in upload_cols:
+            alter_stmts.append("ALTER TABLE upload ADD COLUMN ingredients_md TEXT NOT NULL DEFAULT '';")
+            # Если есть старое поле ingredients, копируем данные
+            if "ingredients" in upload_cols:
+                alter_stmts.append("UPDATE upload SET ingredients_md = ingredients;")
+
+        if "ingredients_json" not in upload_cols:
+            alter_stmts.append("ALTER TABLE upload ADD COLUMN ingredients_json TEXT;")
 
         if "crc" not in upload_cols:
             alter_stmts.append("ALTER TABLE upload ADD COLUMN crc VARCHAR(16) NOT NULL DEFAULT '';")
@@ -453,7 +454,8 @@ def create_app() -> Flask:
             filename=unique_name,
             user_id=current_user.id,
             crc=crc_value,
-            ingredients="",  # будет заполнено после анализа
+            ingredients_md="",  # будет заполнено после анализа
+            ingredients_json=None,  # будет заполнено после анализа
         )
         db.session.add(upload_record)
         db.session.commit()
@@ -480,16 +482,19 @@ def create_app() -> Flask:
             return jsonify({"error": "Нет данных"}), 400
 
         upload_id = data.get("upload_id")
-        ingredients = data.get("ingredients", "")
+        ingredients_md = data.get("ingredients_md", "")
+        ingredients_json = data.get("ingredients_json")
 
         if not upload_id:
             return jsonify({"error": "ID загрузки не указан"}), 400
 
-        upload_record = Upload.query.get_or_404(upload_id)
+        upload_record = db.get_or_404(Upload, upload_id)
         if upload_record.user_id != current_user.id:
             return jsonify({"error": "Доступ запрещен"}), 403
 
-        upload_record.ingredients = ingredients
+        upload_record.ingredients_md = ingredients_md
+        if ingredients_json:
+            upload_record.ingredients_json = json.dumps(ingredients_json, ensure_ascii=False)
         db.session.commit()
 
         return jsonify({"success": True})
@@ -498,13 +503,24 @@ def create_app() -> Flask:
     @login_required
     def get_analysis(filename: str):  # type: ignore
         """Получает сохраненный анализ по имени файла."""
-        upload_record = Upload.query.filter_by(
-            filename=filename,
-            user_id=current_user.id
-        ).first_or_404()
+        upload_record = db.first_or_404(
+            select(Upload).filter_by(
+                filename=filename,
+                user_id=current_user.id
+            )
+        )
+
+        # Декодируем JSON если он есть
+        ingredients_json = None
+        if upload_record.ingredients_json:
+            try:
+                ingredients_json = json.loads(upload_record.ingredients_json)
+            except json.JSONDecodeError:
+                ingredients_json = None
 
         return jsonify({
-            "ingredients": upload_record.ingredients,
+            "ingredients_md": upload_record.ingredients_md,
+            "ingredients_json": ingredients_json,
             "upload_id": upload_record.id
         })
 
@@ -525,7 +541,7 @@ def create_app() -> Flask:
                 return jsonify({"error": "ID загрузки не указан"}), 400
 
             # Находим запись о загрузке
-            upload_record = Upload.query.get_or_404(upload_id)
+            upload_record = db.get_or_404(Upload, upload_id)
             if upload_record.user_id != current_user.id:
                 return jsonify({"error": "Доступ запрещен"}), 403
 
@@ -558,26 +574,46 @@ def create_app() -> Flask:
             if not error_msg:  # Если error пустой, None или False
                 # Формируем текст ингредиентов в markdown формате
                 dishes = analysis_result.get("dishes", [])
-                total_weight = analysis_result.get("total_weight", 0)
                 confidence = analysis_result.get("confidence", 0)
 
                 ingredients_text = f"**Результат анализа изображения:**\n\n"
-                ingredients_text += f"**Общая масса:** {total_weight} г\n"
                 ingredients_text += f"**Уверенность:** {confidence:.1%}\n\n"
                 ingredients_text += "**Обнаруженные блюда:**\n\n"
 
                 for i, dish in enumerate(dishes, 1):
                     name = dish.get("name", "Неизвестное блюдо")
-                    weight = dish.get("weight_grams", 0)
+                    name_en = dish.get("name_en", "")
                     description = dish.get("description", "")
+                    description_en = dish.get("description_en", "")
+                    unit_type = dish.get("unit_type", "")
+                    amount = dish.get("amount", 0)
 
-                    ingredients_text += f"{i}. **{name}** - {weight} г\n"
+                    # Основная информация
+                    ingredients_text += f"{i}. **{name}**"
+                    if name_en:
+                        ingredients_text += f" _{name_en}_"
+
+                    # Количество и единицы
+                    if unit_type and amount:
+                        if unit_type == "штук":
+                            ingredients_text += f" — {amount:.0f} {unit_type}"
+                        else:
+                            ingredients_text += f" — {amount} {unit_type}"
+
+                    ingredients_text += "\n"
+
+                    # Описание
                     if description:
-                        ingredients_text += f"   _{description}_\n"
+                        ingredients_text += f"   _{description}_"
+                        if description_en:
+                            ingredients_text += f" _{description_en}_"
+                        ingredients_text += "\n"
+
                     ingredients_text += "\n"
 
                 # Сохраняем в базу данных
-                upload_record.ingredients = ingredients_text
+                upload_record.ingredients_md = ingredients_text
+                upload_record.ingredients_json = json.dumps(analysis_result, ensure_ascii=False)
                 db.session.commit()
 
                 return jsonify({
@@ -616,7 +652,7 @@ def create_app() -> Flask:
             if not email or not password:
                 return render_template("register.html", error="Заполните все поля")
 
-            if User.query.filter_by(email=email).first():
+            if db.session.execute(select(User).filter_by(email=email)).scalar_one_or_none():
                 return render_template("register.html", error="Email уже зарегистрирован")
 
             user = User(email=email)
@@ -636,7 +672,7 @@ def create_app() -> Flask:
         except (BadSignature, SignatureExpired):
             return "Ссылка недействительна или устарела", 400
 
-        user = User.query.filter_by(email=email).first_or_404()
+        user = db.first_or_404(select(User).filter_by(email=email))
         if not user.is_confirmed:
             user.is_confirmed = True
             db.session.commit()
@@ -655,7 +691,7 @@ def create_app() -> Flask:
             # email может прийти как скрытое поле, поэтому берём из формы
             email = request.form.get("email", "").lower()
             password = request.form.get("password", "")
-            user = User.query.filter_by(email=email).first()
+            user = db.session.execute(select(User).filter_by(email=email)).scalar_one_or_none()
 
             if user and user.check_password(password):
                 if not user.is_confirmed:
@@ -669,11 +705,11 @@ def create_app() -> Flask:
                 login_user(user, remember=True)
 
                 # Сохраняем в сессии последний загруженный файл (если есть)
-                last_upload = (
-                    Upload.query.filter_by(user_id=user.id)
+                last_upload = db.session.execute(
+                    select(Upload)
+                    .filter_by(user_id=user.id)
                     .order_by(Upload.created_at.desc())
-                    .first()
-                )
+                ).scalar_one_or_none()
                 if last_upload:
                     session["last_image"] = url_for(
                         "uploaded_file", filename=last_upload.filename, _external=False
@@ -706,18 +742,18 @@ def create_app() -> Flask:
     @login_required
     def history():  # type: ignore
         """Таблица с ранее загруженными изображениями пользователя."""
-        uploads = (
-            Upload.query.filter_by(user_id=current_user.id)
+        uploads = db.session.execute(
+            select(Upload)
+            .filter_by(user_id=current_user.id)
             .order_by(Upload.created_at.desc())
-            .all()
-        )
+        ).scalars().all()
         return render_template("history.html", uploads=uploads)
 
     @app.get("/use/<int:upload_id>")
     @login_required
     def use_upload(upload_id: int):  # type: ignore
         """Возвращает пользователя на главную с выбранным изображением."""
-        upload_rec = Upload.query.get_or_404(upload_id)
+        upload_rec = db.get_or_404(Upload, upload_id)
         if upload_rec.user_id != current_user.id:
             return "Forbidden", 403
 
@@ -730,7 +766,7 @@ def create_app() -> Flask:
     @login_required
     def delete_upload(upload_id: int):  # type: ignore
         """Удаляет запись и сам файл (если существует)."""
-        upload_rec = Upload.query.get_or_404(upload_id)
+        upload_rec = db.get_or_404(Upload, upload_id)
         if upload_rec.user_id != current_user.id:
             return "Forbidden", 403
 
@@ -760,7 +796,7 @@ def create_app() -> Flask:
         if request.method == "POST":
             email = request.form.get("email", "").strip().lower()
             # Не раскрываем, существует ли email
-            user = User.query.filter_by(email=email).first()
+            user = db.session.execute(select(User).filter_by(email=email)).scalar_one_or_none()
             if user:
                 _send_reset_email(app, user)
             # Сообщаем однотипно
@@ -776,7 +812,7 @@ def create_app() -> Flask:
         except (BadSignature, SignatureExpired):
             return "Ссылка недействительна или устарела", 400
 
-        user = User.query.filter_by(email=email).first_or_404()
+        user = db.first_or_404(select(User).filter_by(email=email))
 
         success: str | None = None
         error: str | None = None

@@ -12,6 +12,14 @@ server:
 # Настройки OpenAI
 openai:
   model: "gpt-4o"
-  temperature: 0.1
+  temperature: 0.5
   max_tokens: 1000
   timeout: 60
+
+# Настройки Edamam Food Database API
+edamam:
+  app_id: "e6a6f9f9"
+  app_key: "9e39a6bc205b6e1639628a107b0629c9"
+  base_url: "https://api.edamam.com/api/food-database/v2/parser"
+  timeout: 30
+  max_results: 10

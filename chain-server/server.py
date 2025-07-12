@@ -17,7 +17,7 @@ from langserve import add_routes
 from langchain_core.runnables import RunnableLambda
 from pydantic import BaseModel
 
-from food_analyzer import FoodImageAnalyzer
+from food_analyzer import FoodImageAnalyzer, EdamamFoodSearcher, FoodSearchRequest, NutrientAnalysis
 
 
 # Константы для настроек
@@ -72,14 +72,15 @@ def create_food_analyzer_with_config(config: Dict[str, Any]) -> FoodImageAnalyze
 # Загружаем конфигурацию
 config = load_config()
 
-# Глобальный экземпляр анализатора
+# Глобальные экземпляры сервисов
 analyzer: FoodImageAnalyzer | None = None
+food_searcher: EdamamFoodSearcher | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Управление жизненным циклом приложения."""
-    global analyzer
+    global analyzer, food_searcher
 
     # Startup
     if not os.getenv("OPENAI_API_KEY"):
@@ -88,11 +89,26 @@ async def lifespan(app: FastAPI):
     analyzer = create_food_analyzer_with_config(config)
     print("✅ Анализатор изображений инициализирован")
 
+    # Инициализация анализатора питательных веществ
+    edamam_config = config.get("edamam", {})
+    openai_config = config.get("openai", {})
+    food_searcher = EdamamFoodSearcher(
+        app_id=edamam_config.get("app_id"),
+        app_key=edamam_config.get("app_key"),
+        base_url=edamam_config.get("base_url"),
+        timeout=edamam_config.get("timeout", 30),
+        max_results=edamam_config.get("max_results", 10),
+        model_name=openai_config.get("model", "gpt-4o"),
+        temperature=openai_config.get("temperature", 0.1)
+    )
+    print("✅ Поисковик Edamam инициализирован")
+
     yield
 
     # Shutdown
     analyzer = None
-    print("🔄 Анализатор отключен")
+    food_searcher = None
+    print("🔄 Сервисы отключены")
 
 
 class ImageAnalysisRequest(BaseModel):
@@ -190,7 +206,25 @@ async def analyze_image(request: ImageAnalysisRequest) -> ImageAnalysisResponse:
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/analyze-nutrients")
+async def analyze_nutrients(request: FoodSearchRequest) -> Dict[str, Any]:
+    """
+    Анализ питательных веществ блюда через Edamam Food Database API.
 
+    Args:
+        request: Запрос с названием блюда
+
+    Returns:
+        Результат анализа питательных веществ
+    """
+    if food_searcher is None:
+        raise HTTPException(status_code=500, detail="Поисковик еды не инициализирован")
+
+    try:
+        result = food_searcher.analyze_dish_nutrients(request.dish, request.amount, request.unit)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/health")
@@ -199,11 +233,12 @@ async def health_check():
     return {
         "status": "healthy",
         "analyzer_ready": analyzer is not None,
+        "food_searcher_ready": food_searcher is not None,
         "openai_key_set": bool(os.getenv("OPENAI_API_KEY"))
     }
 
 
-# Создаем цепочку для LangServe
+# Создаем цепочки для LangServe
 def create_langserve_chain():
     """Создает цепочку для LangServe."""
 
@@ -221,11 +256,42 @@ def create_langserve_chain():
     return RunnableLambda(analyze_wrapper)
 
 
+def create_nutrient_analysis_chain():
+    """Создает цепочку для анализа питательных веществ через Edamam API."""
+
+    def analysis_wrapper(inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Обертка для анализа питательных веществ блюда."""
+        if food_searcher is None:
+            return {"error": "Анализатор питательных веществ не инициализирован"}
+
+        dish = inputs.get("dish")
+        amount = inputs.get("amount", 100)
+        unit = inputs.get("unit", "грамм")
+
+        if not dish:
+            return {"error": "Не указано блюдо для анализа"}
+
+        result = food_searcher.analyze_dish_nutrients(dish, amount, unit)
+
+        # Возвращаем результат как есть (либо nutrients, либо error)
+        return result
+
+    return RunnableLambda(analysis_wrapper)
+
+
 # Добавляем LangServe маршруты
 add_routes(
     app,
     create_langserve_chain(),
     path=LANGSERVE_SETTINGS["path"],
+    playground_type=LANGSERVE_SETTINGS["playground_type"]
+)
+
+# Добавляем цепочку анализа питательных веществ
+add_routes(
+    app,
+    create_nutrient_analysis_chain(),
+    path="/analyze-nutrients",
     playground_type=LANGSERVE_SETTINGS["playground_type"]
 )
 

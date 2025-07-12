@@ -108,6 +108,8 @@ class Upload(db.Model):
     crc = db.Column(db.String(16), nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    # Контекст для интеграции с Edamam API
+    edamam_context = db.Column(db.Text, nullable=True)
 
 @login_manager.user_loader  # type: ignore
 def load_user(user_id: str):
@@ -399,6 +401,9 @@ def create_app() -> Flask:
 
         if "crc" not in upload_cols:
             alter_stmts.append("ALTER TABLE upload ADD COLUMN crc VARCHAR(16) NOT NULL DEFAULT '';")
+
+        if "edamam_context" not in upload_cols:
+            alter_stmts.append("ALTER TABLE upload ADD COLUMN edamam_context TEXT;")
 
         if alter_stmts:
             with engine.begin() as conn:

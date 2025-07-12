@@ -9,6 +9,7 @@ import base64
 from pathlib import Path
 from typing import Dict, List, Any, Literal
 import json
+import requests
 
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage
@@ -171,6 +172,216 @@ class FoodImageAnalyzer:
         return results
 
 
+class FoodSearchRequest(BaseModel):
+    """Модель запроса для анализа питательных веществ."""
+    dish: str = Field(description="Название блюда для анализа")
+    amount: float = Field(description="Количество блюда")
+    unit: str = Field(default="грамм", description="Единица измерения (грамм, штук, чашка, кусок, ломтик)")
+
+
+class NutrientAnalysis(BaseModel):
+    """Модель результата анализа питательных веществ."""
+    dish_name: str = Field(description="Название блюда с количеством")
+    calories: float = Field(description="Калории в ккал")
+    protein: float = Field(description="Белки в граммах")
+    fat: float = Field(description="Жиры в граммах")
+    carbohydrates: float = Field(description="Углеводы в граммах")
+    fiber: float = Field(description="Клетчатка в граммах")
+
+
+class EdamamFoodSearcher:
+    """Анализатор питательных веществ через Edamam API и OpenAI."""
+
+    def __init__(self, app_id: str, app_key: str, base_url: str, timeout: int = 30, max_results: int = 3,
+                 model_name: str = "gpt-4o", temperature: float = 0.1):
+        """
+        Инициализация анализатора.
+
+        Args:
+            app_id: ID приложения Edamam
+            app_key: Ключ приложения Edamam
+            base_url: Базовый URL API
+            timeout: Таймаут запроса в секундах
+            max_results: Максимальное количество результатов
+            model_name: Название модели OpenAI
+            temperature: Температура для генерации
+        """
+        self.app_id = app_id
+        self.app_key = app_key
+        self.base_url = base_url
+        self.timeout = timeout
+        self.max_results = max_results
+
+        # Инициализация OpenAI модели для анализа питательных веществ
+        self.llm = ChatOpenAI(
+            model=model_name,
+            temperature=temperature,
+            max_tokens=500
+        )
+        self.nutrient_parser = JsonOutputParser(pydantic_object=NutrientAnalysis)
+
+        # Системный промпт для анализа питательных веществ
+        self.nutrient_prompt = """
+        Ты эксперт по питанию. Проанализируй данные о еде из Edamam API и определи питательную ценность блюда.
+
+        ВАЖНО: Все данные в Edamam API указаны на 100 грамм продукта!
+
+        Алгоритм расчета:
+        1. Изучи JSON данные от Edamam API
+        2. Найди наиболее подходящий продукт для указанного блюда в разделах "parsed" или "hints"
+        3. Возьми значения питательных веществ из поля "nutrients" (они даны на 100г)
+        4. ОБЯЗАТЕЛЬНО пересчитай на указанное количество по формуле:
+           Итоговое_значение = (Значение_на_100г * Указанное_количество_в_граммах) / 100
+
+        Правила расчета:
+        - ВСЕ данные из API даны на 100г - это критически важно!
+        - Для "грамм": используй указанное количество напрямую
+        - Для "штук": 1 штука = ~150г (средний размер)
+        - Для "кусок": 1 кусок = ~100г
+        - Для "ломтик": 1 ломтик = ~50г
+        - Для "чашка": 1 чашка = ~200г
+        - Округляй результаты до 2 знаков после запятой
+        - В поле dish_name укажи название блюда с количеством, как указано в запросе
+
+        Пример расчета: если продукт содержит 108 ккал на 100г, а нужно рассчитать для 200г, то:
+        Калории = (108 * 200) / 100 = 216 ккал
+
+        Возвращай результат строго в указанном JSON формате.
+        """
+
+        self._build_chain()
+
+    def _search_single_dish(self, dish_name: str) -> Dict[str, Any]:
+        """Поиск одного блюда в Edamam API."""
+        params = {
+            "app_id": self.app_id,
+            "app_key": self.app_key,
+            "ingr": dish_name,
+        }
+
+        try:
+            response = requests.get(self.base_url, params=params, timeout=self.timeout)
+            response.raise_for_status()
+
+            data = response.json()
+
+            # Ограничиваем количество результатов
+            if "parsed" in data and len(data["parsed"]) > self.max_results:
+                data["parsed"] = data["parsed"][:self.max_results]
+            if "hints" in data and len(data["hints"]) > self.max_results:
+                data["hints"] = data["hints"][:self.max_results]
+
+            return {
+                "dish_name": dish_name,
+                "success": True,
+                "data": data
+            }
+
+        except requests.exceptions.RequestException as e:
+            return {
+                "dish_name": dish_name,
+                "success": False,
+                "error": str(e),
+                "data": None
+            }
+
+    def _analyze_nutrients_with_llm(self, edamam_data: Dict[str, Any], dish: str, amount: float, unit: str) -> Dict[str, Any]:
+        """Анализ питательных веществ через OpenAI на основе данных Edamam."""
+        try:
+            # Формируем полное название блюда с количеством
+            dish_with_amount = f"{dish} ({amount} {unit})"
+
+            # Формируем запрос для LLM
+            user_query = f"""
+            Блюдо: {dish}
+            Количество: {amount} {unit}
+
+            Данные от Edamam API:
+            {json.dumps(edamam_data, ensure_ascii=False, indent=2)}
+
+            Проанализируй и рассчитай питательную ценность для указанного количества блюда.
+            В поле dish_name укажи: "{dish_with_amount}"
+            """
+
+            # Создаем сообщение
+            messages = [
+                HumanMessage(content=f"{self.nutrient_prompt}\n\nФормат ответа:\n{self.nutrient_parser.get_format_instructions()}\n\n{user_query}")
+            ]
+
+            # Получаем ответ от LLM
+            response = self.llm.invoke(messages)
+            nutrients = self.nutrient_parser.parse(response.content)
+
+            return {
+                "success": True,
+                "nutrients": nutrients
+            }
+
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Ошибка анализа питательных веществ: {str(e)}",
+                "nutrients": None
+            }
+
+    def _build_chain(self):
+        """Строит цепочку для анализа питательных веществ блюда."""
+
+        def analyze_dish_nutrients(inputs: Dict[str, Any]) -> Dict[str, Any]:
+            """Анализ питательных веществ блюда."""
+            dish = inputs.get("dish", "").strip()
+            amount = inputs.get("amount", 100)
+            unit = inputs.get("unit", "грамм")
+
+            if not dish:
+                return {
+                    "error": "Не указано блюдо для анализа"
+                }
+
+            # Сначала получаем данные от Edamam
+            edamam_result = self._search_single_dish(dish)
+
+            if not edamam_result.get("success"):
+                return {
+                    "error": edamam_result.get("error", "Ошибка получения данных от Edamam API")
+                }
+
+                        # Затем анализируем питательные вещества через LLM
+            nutrients_result = self._analyze_nutrients_with_llm(
+                edamam_result["data"], dish, amount, unit
+            )
+
+            # Возвращаем только nutrients
+            if nutrients_result["success"]:
+                return nutrients_result["nutrients"]
+            else:
+                return {
+                    "error": edamam_result.get("error") or nutrients_result.get("error")
+                }
+
+        self.chain = RunnableLambda(analyze_dish_nutrients)
+
+    def analyze_dish_nutrients(self, dish: str, amount: float = 100, unit: str = "грамм") -> Dict[str, Any]:
+        """
+        Анализ питательных веществ блюда.
+
+        Args:
+            dish: Название блюда
+            amount: Количество блюда
+            unit: Единица измерения
+
+        Returns:
+            Результат анализа питательных веществ
+        """
+        return self.chain.invoke({"dish": dish, "amount": amount, "unit": unit})
+
+
 def create_food_analyzer() -> FoodImageAnalyzer:
     """Создает экземпляр анализатора изображений еды."""
     return FoodImageAnalyzer()
+
+
+def create_food_searcher(app_id: str, app_key: str, base_url: str, timeout: int = 30, max_results: int = 10,
+                        model_name: str = "gpt-4o", temperature: float = 0.1) -> EdamamFoodSearcher:
+    """Создает экземпляр анализатора питательных веществ."""
+    return EdamamFoodSearcher(app_id, app_key, base_url, timeout, max_results, model_name, temperature)

@@ -193,7 +193,8 @@ class EdamamFoodSearcher:
     """Анализатор питательных веществ через Edamam API и OpenAI."""
 
     def __init__(self, app_id: str, app_key: str, base_url: str, timeout: int = 30, max_results: int = 3,
-                 model_name: str = "gpt-4o", temperature: float = 0.1):
+                 model_name: str = "gpt-4o", temperature: float = 0.5, max_tokens: int = 800,
+                 request_timeout: int = 45):
         """
         Инициализация анализатора.
 
@@ -201,10 +202,12 @@ class EdamamFoodSearcher:
             app_id: ID приложения Edamam
             app_key: Ключ приложения Edamam
             base_url: Базовый URL API
-            timeout: Таймаут запроса в секундах
+            timeout: Таймаут запроса к Edamam API в секундах
             max_results: Максимальное количество результатов
             model_name: Название модели OpenAI
             temperature: Температура для генерации
+            max_tokens: Максимальное количество токенов
+            request_timeout: Таймаут запроса к OpenAI API в секундах
         """
         self.app_id = app_id
         self.app_key = app_key
@@ -216,7 +219,8 @@ class EdamamFoodSearcher:
         self.llm = ChatOpenAI(
             model=model_name,
             temperature=temperature,
-            max_tokens=500
+            max_tokens=max_tokens,
+            request_timeout=request_timeout
         )
         self.nutrient_parser = JsonOutputParser(pydantic_object=NutrientAnalysis)
 
@@ -382,6 +386,8 @@ def create_food_analyzer() -> FoodImageAnalyzer:
 
 
 def create_food_searcher(app_id: str, app_key: str, base_url: str, timeout: int = 30, max_results: int = 10,
-                        model_name: str = "gpt-4o", temperature: float = 0.1) -> EdamamFoodSearcher:
+                        model_name: str = "gpt-4o", temperature: float = 0.5, max_tokens: int = 800,
+                        request_timeout: int = 45) -> EdamamFoodSearcher:
     """Создает экземпляр анализатора питательных веществ."""
-    return EdamamFoodSearcher(app_id, app_key, base_url, timeout, max_results, model_name, temperature)
+    return EdamamFoodSearcher(app_id, app_key, base_url, timeout, max_results, model_name, temperature,
+                             max_tokens, request_timeout)

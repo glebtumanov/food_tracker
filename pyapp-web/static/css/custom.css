@@ -1,24 +1,343 @@
 /* Дополнительные стили проекта */
 
+/* Основной контейнер - узкий макет */
+.container {
+  max-width: 600px !important;
+  margin: 0 auto;
+  padding: 0 20px;
+}
+
+/* Убираем стандартные отступы Bootstrap */
+.py-5 {
+  padding-top: 2rem !important;
+  padding-bottom: 2rem !important;
+}
+
+/* Заголовок приложения */
+h2.display-5 {
+  font-size: 2.5rem;
+  font-weight: 400;
+  color: #f8f9fa;
+  margin-bottom: 2rem;
+}
+
+/* Форма загрузки файла */
+#uploadForm {
+  margin-bottom: 20px;
+  background: transparent !important;
+  border: none !important;
+  padding: 0 !important;
+}
+
 /* Пунктирная рамка для drag'n'drop */
 #dropZone {
   cursor: pointer;
   transition: background-color 0.2s ease-in-out;
   margin-bottom: 0 !important;
+  border-color: #6c757d !important;
+  background-color: #343a40;
+  color: #adb5bd;
 }
 
 #dropZone.border-dashed {
   border-style: dashed !important;
 }
 
+#dropZone:hover {
+  background-color: #495057;
+}
+
+#dropZone p {
+  margin: 0;
+  line-height: 1.4;
+}
+
+/* Контейнер предпросмотра */
+#previewContainer {
+  margin-top: 0;
+}
+
+#previewContainer .card {
+  background-color: #495057 !important;
+  border: 1px solid #6c757d !important;
+  border-radius: 8px;
+}
+
+#previewContainer .card .border {
+  border-color: #6c757d !important;
+  background-color: transparent;
+}
+
 #previewContainer img {
+  padding: 0;
+  border-radius: 8px;
+  width: 100%;
+  height: auto;
+}
+
+/* Результаты анализа */
+#analysisResult {
+  color: #f8f9fa;
+  font-size: 0.95rem;
+  line-height: 1.6;
+}
+
+#analysisResult h5 {
+  color: #f8f9fa;
+  font-size: 1.1rem;
+  margin-bottom: 1rem;
+}
+
+#analysisResult h6 {
+  color: #f8f9fa;
+  font-size: 1rem;
+  margin-bottom: 0.5rem;
+}
+
+#analysisResult .list-group-item {
+  background-color: #343a40;
+  border: 1px solid #495057;
+  color: #f8f9fa;
+  margin-bottom: 0.5rem;
+  border-radius: 6px;
+}
+
+#analysisResult .list-group-item .text-muted {
+  color: #adb5bd !important;
+}
+
+#analysisResult .alert {
+  border-radius: 6px;
+}
+
+#analysisResult .alert-danger {
+  background-color: #721c24;
+  border-color: #842029;
+  color: #f8d7da;
+}
+
+#analysisResult .spinner-border {
+  width: 2rem;
+  height: 2rem;
+}
+
+/* Результаты анализа нутриентов */
+#nutrientsResult {
+  color: #f8f9fa;
+  font-size: 0.95rem;
+  line-height: 1.6;
+}
+
+#nutrientsResult h5 {
+  color: #f8f9fa;
+  font-size: 1.1rem;
+  margin-bottom: 1rem;
+}
+
+#nutrientsResult .nutrient-item {
+  background-color: #343a40;
+  border: 1px solid #495057;
+  border-radius: 8px;
+  padding: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+#nutrientsResult .nutrient-item h6 {
+  color: #198754;
+  font-size: 1rem;
+  margin-bottom: 0.5rem;
+  font-weight: 600;
+}
+
+#nutrientsResult .nutrient-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+#nutrientsResult .nutrient-stat {
+  background-color: #495057;
+  border-radius: 4px;
   padding: 0.5rem;
+  text-align: center;
+  font-size: 0.85rem;
 }
 
-#previewContainer .card-body {
-  padding: 1rem 1.25rem;
+#nutrientsResult .nutrient-stat .label {
+  font-weight: 500;
+  color: #adb5bd;
+  font-size: 0.75rem;
+  display: block;
 }
 
-#uploadForm {
-  margin-bottom: 15px;
+#nutrientsResult .nutrient-stat .value {
+  font-weight: 600;
+  color: #f8f9fa;
+  font-size: 0.9rem;
+}
+
+/* Блок кнопок */
+#buttonContainer {
+  padding: 1rem 0;
+  border-bottom: 1px solid #6c757d;
+}
+
+/* Кнопки анализа */
+#analyzeButton, #nutrientsButton {
+  padding: 12px 24px;
+  font-size: 0.95rem;
+  border-radius: 6px;
+  font-weight: 500;
+  transition: all 0.2s ease;
+  min-width: 180px;
+}
+
+#analyzeButton {
+  background-color: #0d6efd;
+  border-color: #0d6efd;
+}
+
+#analyzeButton:hover {
+  background-color: #0b5ed7;
+  border-color: #0a58ca;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 8px rgba(13, 110, 253, 0.3);
+}
+
+#nutrientsButton {
+  background-color: #198754;
+  border-color: #198754;
+}
+
+#nutrientsButton:hover {
+  background-color: #157347;
+  border-color: #146c43;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 8px rgba(25, 135, 84, 0.3);
+}
+
+#analyzeButton:disabled, #nutrientsButton:disabled {
+  background-color: #495057;
+  border-color: #495057;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+/* Состояние загрузки */
+.loading-state {
+  text-align: center;
+  padding: 2rem;
+  color: #adb5bd;
+}
+
+.loading-state .spinner-border {
+  color: #0d6efd;
+  margin-bottom: 1rem;
+}
+
+/* Адаптивность для мобильных устройств */
+@media (max-width: 768px) {
+  .container {
+    max-width: 100% !important;
+    padding: 0 15px;
+  }
+
+  h2.display-5 {
+    font-size: 2rem;
+  }
+
+  #dropZone {
+    padding: 3rem 2rem !important;
+  }
+
+  #previewContainer .row.g-0 {
+    flex-direction: column;
+  }
+
+  #previewContainer .col-md-4,
+  #previewContainer .col-md-8 {
+    flex: 0 0 100%;
+    max-width: 100%;
+  }
+
+  #previewContainer .card-body {
+    padding-top: 1rem !important;
+    padding-left: 0 !important;
+  }
+}
+
+/* Компактная навигация */
+.navbar {
+  padding: 0.5rem 0;
+}
+
+.navbar-brand {
+  font-size: 1.1rem;
+  font-weight: 500;
+}
+
+.nav-link {
+  font-size: 0.9rem;
+  padding: 0.5rem 0.75rem !important;
+}
+
+/* Стили для истории запросов */
+.table-dark {
+  background-color: #343a40;
+}
+
+.table-dark th {
+  background-color: #495057;
+  border-color: #6c757d;
+  color: #f8f9fa;
+  font-weight: 500;
+  font-size: 0.95rem;
+}
+
+.table-dark td {
+  border-color: #6c757d;
+  vertical-align: middle;
+}
+
+.img-thumbnail {
+  background-color: #495057;
+  border: 1px solid #6c757d;
+  border-radius: 6px;
+  padding: 2px;
+}
+
+.ingredients-summary {
+  font-size: 0.9rem;
+  line-height: 1.4;
+  color: #f8f9fa;
+  max-height: 100px;
+  overflow: hidden;
+}
+
+.btn-group-vertical .btn {
+  border-radius: 4px;
+  font-size: 0.85rem;
+  padding: 6px 12px;
+}
+
+.btn-outline-primary {
+  border-color: #0d6efd;
+  color: #0d6efd;
+}
+
+.btn-outline-primary:hover {
+  background-color: #0d6efd;
+  color: #fff;
+}
+
+.btn-outline-danger {
+  border-color: #dc3545;
+  color: #dc3545;
+}
+
+.btn-outline-danger:hover {
+  background-color: #dc3545;
+  color: #fff;
 }

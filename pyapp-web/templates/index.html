@@ -54,26 +54,30 @@
         </div>
       </form>
 
-      <!-- Статический шаблон превью. До загрузки файла блок остаётся пустым, но вся структура готова -->
-      <div id="previewContainer" class="row gy-3">
-        <div class="col-12">
-          <div class="card mb-3 bg-dark border-secondary text-light w-100">
-            <div class="border rounded-3 p-4">
-              <div class="row g-0 align-items-start">
-                <div class="col-md-4">
-                  <!-- Картинка скрыта, пока не будет загружена -->
-                  <img id="previewImage" src="" class="img-fluid rounded shadow-sm d-none" alt="Предпросмотр" />
-                </div>
-                <div class="col-md-8">
-                  <div class="card-body p-0 ps-md-4">
-                    <div id="analysisResult" class="card-text mb-3" style="display: none;"></div>
-                    <button id="analyzeButton" class="btn btn-primary" style="display: none;">
-                      Отправить запрос
-                    </button>
-                  </div>
-                </div>
-              </div>
+            <!-- Контейнер предпросмотра с вертикальным layout -->
+      <div id="previewContainer">
+        <div class="card mb-3 bg-dark border-secondary text-light" style="display: none;">
+          <div class="card-body">
+            <!-- Блок кнопок -->
+            <div id="buttonContainer" class="text-center mb-3" style="display: none;">
+              <button id="analyzeButton" class="btn btn-primary me-2">
+                Определить еду на картинке
+              </button>
+              <button id="nutrientsButton" class="btn btn-success">
+                Определить нутриенты
+              </button>
             </div>
+
+            <!-- Изображение -->
+            <div class="text-center mb-3">
+              <img id="previewImage" src="" class="img-fluid rounded shadow-sm" alt="Предпросмотр" />
+            </div>
+
+            <!-- Результаты анализа -->
+            <div id="analysisResult" class="mb-3" style="display: none;"></div>
+
+            <!-- Результаты анализа нутриентов -->
+            <div id="nutrientsResult" class="mb-3" style="display: none;"></div>
           </div>
         </div>
       </div>

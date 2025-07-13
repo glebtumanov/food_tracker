@@ -8,6 +8,8 @@
       href="https://cdn.jsdelivr.net/npm/bootswatch@5.3.3/dist/darkly/bootstrap.min.css"
       rel="stylesheet"
     />
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/custom.css') }}" />
   </head>
   <body>
     <!-- Навигация -->
@@ -28,16 +30,16 @@
     </nav>
 
     <div class="container py-5">
-      <h3 class="mb-4 text-center">История ваших изображений</h3>
+      <h2 class="mb-4 text-center display-6">История запросов</h2>
 
       {% if uploads %}
       <div class="table-responsive">
         <table class="table table-dark table-striped align-middle">
           <thead>
             <tr>
-              <th scope="col" class="text-center" style="width: 140px;">Превью</th>
-              <th scope="col" class="text-center" style="width: 15%;">Дата/время</th>
-              <th scope="col" class="text-center" style="width: 65%;">Ингредиенты</th>
+              <th scope="col" class="text-center" style="width: 200px;">Превью</th>
+              <th scope="col" class="text-center" style="width: 180px;">Дата/время</th>
+              <th scope="col" class="text-start">Ингредиенты</th>
               <th scope="col" class="text-center" style="width: 160px;">Действия</th>
             </tr>
           </thead>
@@ -50,29 +52,33 @@
                     src="{{ url_for('uploaded_file', filename=img.filename) }}"
                     alt="preview"
                     class="img-thumbnail"
-                    style="max-width: 140px;"
+                    style="max-width: 160px; max-height: 120px; object-fit: cover;"
                   />
                 </a>
               </td>
-              <td class="text-center">{{ img.created_at|ru_dt }}</td>
-              <td class="text-start small">
+              <td class="text-center small">
+                {{ img.created_at|ru_dt }}
+              </td>
+              <td class="text-start">
                 {% if img.ingredients_md %}
-                  {{ img.ingredients_md|dishes_only|replace('**', '')|replace('\n', '<br>')|safe }}
+                  <div class="ingredients-summary">
+                    {{ img.ingredients_md|dishes_only|replace('**', '')|replace('\n', '<br>')|safe|truncate(200) }}
+                  </div>
                 {% else %}
                   <span class="text-muted">Анализ не проводился</span>
                 {% endif %}
               </td>
               <td class="text-center">
-                <div class="btn-group" role="group">
+                <div class="btn-group-vertical btn-group-sm" role="group">
                   <a
                     href="{{ url_for('use_upload', upload_id=img.id) }}"
-                    class="btn btn-sm btn-outline-light"
+                    class="btn btn-sm btn-outline-primary mb-1"
                     title="Использовать в форме"
                     >Использовать</a
                   >
                   <a
                     href="{{ url_for('delete_upload', upload_id=img.id) }}"
-                    class="btn btn-sm btn-outline-light"
+                    class="btn btn-sm btn-outline-danger"
                     title="Удалить изображение"
                     onclick="return confirm('Удалить изображение?');"
                     >Удалить</a

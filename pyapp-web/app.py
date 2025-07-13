@@ -36,33 +36,9 @@ from sqlalchemy import inspect, text as sa_text, select
 
 def load_config(config_path: str = "config.yaml") -> Dict[str, Any]:
     """Загружает конфигурацию из YAML файла."""
-    try:
-        with open(config_path, 'r', encoding='utf-8') as f:
-            config = yaml.safe_load(f)
-        return config
-    except FileNotFoundError:
-        # Возвращаем конфигурацию по умолчанию
-        return {
-            "server": {"host": "0.0.0.0", "port": 5001, "debug": True},
-            "database": {"url": "sqlite:///app.db", "track_modifications": False},
-            "upload": {
-                "folder": "uploads",
-                "max_content_length_mb": 16,
-                "allowed_extensions": ["png", "jpg", "jpeg", "gif", "webp"]
-            },
-            "security": {"remember_cookie_duration_days": 7, "secret_key": None},
-            "mail": {
-                "server": "smtp.example.com",
-                "port": 465,
-                "username": "username",
-                "password": "password",
-                "default_sender": "noreply@example.com",
-                "use_tls": True,
-                "use_ssl": True
-            }
-        }
-    except yaml.YAMLError as e:
-        raise ValueError(f"Ошибка чтения конфигурации: {e}")
+    with open(config_path, 'r', encoding='utf-8') as f:
+        config = yaml.safe_load(f)
+    return config
 
 # Загружаем конфигурацию
 config = load_config()
@@ -188,70 +164,48 @@ def analyze_image_with_chain_server(image_path: str) -> Dict[str, Any]:
 
     full_url = f"{chain_url}{analyze_endpoint}"
 
-    try:
-        # Проверяем, существует ли файл
-        if not os.path.exists(image_path):
-            return {
-                "error": f"Файл изображения не найден: {image_path}",
-                "dishes": [],
-                "confidence": 0.0
-            }
-
-        # Кодируем изображение в base64
-        with open(image_path, "rb") as image_file:
-            image_base64 = base64.b64encode(image_file.read()).decode('utf-8')
-
-        # Подготавливаем запрос
-        payload = {
-            "image_base64": image_base64,
-            "filename": Path(image_path).name
-        }
-
-        # Отправляем запрос к chain-серверу
-        response = requests.post(
-            full_url,
-            json=payload,
-            timeout=timeout,
-            headers={"Content-Type": "application/json"}
-        )
-
-        if response.status_code == 200:
-            result = response.json()
-            print(json.dumps(result, indent=4, ensure_ascii=False))
-            # Убираем поле error если оно None (успешный анализ)
-            if result.get("error") is None:
-                result.pop("error", None)
-            return result
-        else:
-            error_msg = f"Ошибка chain-сервера: {response.status_code}"
-            try:
-                error_data = response.json()
-                if "detail" in error_data:
-                    error_msg = error_data["detail"]
-            except:
-                pass
-
-            return {
-                "error": error_msg,
-                "dishes": [],
-                "confidence": 0.0
-            }
-
-    except requests.exceptions.ConnectionError:
+    # Проверяем, существует ли файл
+    if not os.path.exists(image_path):
         return {
-            "error": "Не удается подключиться к серверу анализа. Убедитесь, что chain-server запущен.",
+            "error": f"Файл изображения не найден: {image_path}",
             "dishes": [],
             "confidence": 0.0
         }
-    except requests.exceptions.Timeout:
+
+    # Кодируем изображение в base64
+    with open(image_path, "rb") as image_file:
+        image_base64 = base64.b64encode(image_file.read()).decode('utf-8')
+
+    # Подготавливаем запрос
+    payload = {
+        "image_base64": image_base64,
+        "filename": Path(image_path).name
+    }
+
+    # Отправляем запрос к chain-серверу
+    response = requests.post(
+        full_url,
+        json=payload,
+        timeout=timeout,
+        headers={"Content-Type": "application/json"}
+    )
+
+    if response.status_code == 200:
+        result = response.json()
+        print(json.dumps(result, indent=4, ensure_ascii=False))
+        # Убираем поле error если оно None (успешный анализ)
+        if result.get("error") is None:
+            result.pop("error", None)
+        return result
+    else:
+        error_msg = f"Ошибка chain-сервера: {response.status_code}"
+        if response.headers.get("content-type") == "application/json":
+            error_data = response.json()
+            if "detail" in error_data:
+                error_msg = error_data["detail"]
+
         return {
-            "error": "Превышено время ожидания ответа от сервера анализа.",
-            "dishes": [],
-            "confidence": 0.0
-        }
-    except Exception as e:
-        return {
-            "error": f"Ошибка при обращении к серверу анализа: {str(e)}",
+            "error": error_msg,
             "dishes": [],
             "confidence": 0.0
         }
@@ -518,10 +472,7 @@ def create_app() -> Flask:
         # Декодируем JSON если он есть
         ingredients_json = None
         if upload_record.ingredients_json:
-            try:
-                ingredients_json = json.loads(upload_record.ingredients_json)
-            except json.JSONDecodeError:
-                ingredients_json = None
+            ingredients_json = json.loads(upload_record.ingredients_json)
 
         return jsonify({
             "ingredients_md": upload_record.ingredients_md,
@@ -533,110 +484,162 @@ def create_app() -> Flask:
     @login_required
     def analyze_image():  # type: ignore
         """Анализирует изображение с помощью chain-сервера."""
-        try:
-            if not current_user.is_confirmed:
-                return jsonify({"error": "Подтвердите email"}), 403
+        if not current_user.is_confirmed:
+            return jsonify({"error": "Подтвердите email"}), 403
 
-            data = request.get_json()
-            if not data:
-                return jsonify({"error": "Нет данных"}), 400
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "Нет данных"}), 400
 
-            upload_id = data.get("upload_id")
-            if not upload_id:
-                return jsonify({"error": "ID загрузки не указан"}), 400
+        upload_id = data.get("upload_id")
+        if not upload_id:
+            return jsonify({"error": "ID загрузки не указан"}), 400
 
-            # Находим запись о загрузке
-            upload_record = db.get_or_404(Upload, upload_id)
-            if upload_record.user_id != current_user.id:
-                return jsonify({"error": "Доступ запрещен"}), 403
+        # Находим запись о загрузке
+        upload_record = db.get_or_404(Upload, upload_id)
+        if upload_record.user_id != current_user.id:
+            return jsonify({"error": "Доступ запрещен"}), 403
 
-            # Путь к файлу
-            image_path = os.path.join(app.config["UPLOAD_FOLDER"], upload_record.filename)
+        # Путь к файлу
+        image_path = os.path.join(app.config["UPLOAD_FOLDER"], upload_record.filename)
 
-            if not os.path.exists(image_path):
-                return jsonify({"error": "Файл изображения не найден"}), 404
+        if not os.path.exists(image_path):
+            return jsonify({"error": "Файл изображения не найден"}), 404
 
-            # Сначала проверяем, работает ли chain-сервер
-            chain_config = config.get("chain_server", {})
-            chain_url = chain_config.get("url", "http://localhost:8000")
+        # Проверяем, работает ли chain-сервер
+        chain_config = config.get("chain_server", {})
+        chain_url = chain_config.get("url", "http://localhost:8000")
 
-            try:
-                health_response = requests.get(f"{chain_url}/health", timeout=5)
-                if health_response.status_code == 200:
-                    health_data = health_response.json()
-                    if not health_data.get("analyzer_ready"):
-                        return jsonify({"error": "Анализатор не готов"}), 503
-                else:
-                    return jsonify({"error": "Chain-сервер недоступен"}), 503
-            except Exception:
-                return jsonify({"error": "Chain-сервер недоступен"}), 503
+        health_response = requests.get(f"{chain_url}/health", timeout=5)
+        if health_response.status_code != 200:
+            return jsonify({"error": "Chain-сервер недоступен"}), 503
 
-            # Анализируем изображение через chain-сервер
-            analysis_result = analyze_image_with_chain_server(image_path)
+        health_data = health_response.json()
+        if not health_data.get("image_analyzer_ready"):
+            return jsonify({"error": "Анализатор не готов"}), 503
 
-            # Проверяем результат анализа
-            error_msg = analysis_result.get("error")
-            if not error_msg:  # Если error пустой, None или False
-                # Формируем текст ингредиентов в markdown формате
-                dishes = analysis_result.get("dishes", [])
-                confidence = analysis_result.get("confidence", 0)
+        # Анализируем изображение через chain-сервер
+        analysis_result = analyze_image_with_chain_server(image_path)
 
-                ingredients_text = f"**Результат анализа изображения:**\n\n"
-                ingredients_text += f"**Уверенность:** {confidence:.1%}\n\n"
-                ingredients_text += "**Обнаруженные блюда:**\n\n"
-
-                for i, dish in enumerate(dishes, 1):
-                    name = dish.get("name", "Неизвестное блюдо")
-                    name_en = dish.get("name_en", "")
-                    description = dish.get("description", "")
-                    description_en = dish.get("description_en", "")
-                    unit_type = dish.get("unit_type", "")
-                    amount = dish.get("amount", 0)
-
-                    # Основная информация
-                    ingredients_text += f"{i}. **{name}**"
-                    if name_en:
-                        ingredients_text += f" _{name_en}_"
-
-                    # Количество и единицы
-                    if unit_type and amount:
-                        if unit_type == "штук":
-                            ingredients_text += f" — {amount:.0f} {unit_type}"
-                        else:
-                            ingredients_text += f" — {amount} {unit_type}"
-
-                    ingredients_text += "\n"
-
-                    # Описание
-                    if description:
-                        ingredients_text += f"   _{description}_"
-                        if description_en:
-                            ingredients_text += f" _{description_en}_"
-                        ingredients_text += "\n"
-
-                    ingredients_text += "\n"
-
-                # Сохраняем в базу данных
-                upload_record.ingredients_md = ingredients_text
-                upload_record.ingredients_json = json.dumps(analysis_result, ensure_ascii=False)
-                db.session.commit()
-
-                return jsonify({
-                    "success": True,
-                    "analysis": analysis_result,
-                    "formatted_text": ingredients_text
-                })
-            else:
-                return jsonify({
-                    "success": False,
-                    "error": error_msg
-                }), 500
-
-        except Exception as e:
+        # Проверяем результат анализа
+        error_msg = analysis_result.get("error")
+        if error_msg:
             return jsonify({
                 "success": False,
-                "error": f"Внутренняя ошибка сервера: {str(e)}"
+                "error": error_msg
             }), 500
+
+        # Формируем текст ингредиентов в markdown формате
+        dishes = analysis_result.get("dishes", [])
+        confidence = analysis_result.get("confidence", 0)
+
+        ingredients_text = f"**Результат анализа изображения:**\n\n"
+        ingredients_text += f"**Уверенность:** {confidence:.1%}\n\n"
+        ingredients_text += "**Обнаруженные блюда:**\n\n"
+
+        for i, dish in enumerate(dishes, 1):
+            name = dish.get("name", "Неизвестное блюдо")
+            name_en = dish.get("name_en", "")
+            description = dish.get("description", "")
+            description_en = dish.get("description_en", "")
+            unit_type = dish.get("unit_type", "")
+            amount = dish.get("amount", 0)
+
+            # Основная информация
+            ingredients_text += f"{i}. **{name}**"
+            if name_en:
+                ingredients_text += f" _{name_en}_"
+
+            # Количество и единицы
+            if unit_type and amount:
+                if unit_type == "штук":
+                    ingredients_text += f" — {amount:.0f} {unit_type}"
+                else:
+                    ingredients_text += f" — {amount} {unit_type}"
+
+            ingredients_text += "\n"
+
+            # Описание
+            if description:
+                ingredients_text += f"   _{description}_"
+                if description_en:
+                    ingredients_text += f" _{description_en}_"
+                ingredients_text += "\n"
+
+            ingredients_text += "\n"
+
+        # Сохраняем в базу данных
+        upload_record.ingredients_md = ingredients_text
+        upload_record.ingredients_json = json.dumps(analysis_result, ensure_ascii=False)
+        db.session.commit()
+
+        return jsonify({
+            "success": True,
+            "analysis": analysis_result,
+            "formatted_text": ingredients_text
+        })
+
+    @app.post("/analyze_nutrients")
+    @login_required
+    def analyze_nutrients():  # type: ignore
+        """Анализирует питательную ценность блюда через chain-сервер."""
+        if not current_user.is_confirmed:
+            return jsonify({"error": "Подтвердите email"}), 403
+
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "Нет данных"}), 400
+
+        dish = data.get("dish")
+        amount = data.get("amount", 100)
+        unit = data.get("unit", "грамм")
+
+        if not dish:
+            return jsonify({"error": "Не указано блюдо"}), 400
+
+        # Настройки chain-сервера
+        chain_config = config.get("chain_server", {})
+        chain_url = chain_config.get("url", "http://localhost:8000")
+        timeout = chain_config.get("timeout", 30)
+
+        # Проверяем, работает ли chain-сервер
+        try:
+            health_response = requests.get(f"{chain_url}/health", timeout=5)
+            if health_response.status_code != 200:
+                return jsonify({"error": "Chain-сервер недоступен"}), 503
+
+            health_data = health_response.json()
+            if not health_data.get("nutrients_analyzer_ready"):
+                return jsonify({"error": "Анализатор нутриентов не готов"}), 503
+        except requests.RequestException:
+            return jsonify({"error": "Chain-сервер недоступен"}), 503
+
+        # Отправляем запрос на анализ нутриентов
+        try:
+            response = requests.post(
+                f"{chain_url}/analyze-nutrients",
+                json={"dish": dish, "amount": amount, "unit": unit},
+                timeout=timeout,
+                headers={"Content-Type": "application/json"}
+            )
+
+            if response.status_code == 200:
+                result = response.json()
+                return jsonify(result)
+            else:
+                error_msg = f"Ошибка chain-сервера: {response.status_code}"
+                if response.headers.get("content-type") == "application/json":
+                    try:
+                        error_data = response.json()
+                        if "detail" in error_data:
+                            error_msg = error_data["detail"]
+                    except:
+                        pass
+
+                return jsonify({"error": error_msg}), 500
+
+        except requests.RequestException as e:
+            return jsonify({"error": f"Ошибка соединения: {str(e)}"}), 500
 
     # Обработка 413 — превышен размер файла
     @app.errorhandler(413)
@@ -775,11 +778,10 @@ def create_app() -> Flask:
         if upload_rec.user_id != current_user.id:
             return "Forbidden", 403
 
-        # Пытаемся удалить сам файл – не критично, если его нет.
-        try:
-            os.remove(os.path.join(app.config["UPLOAD_FOLDER"], upload_rec.filename))
-        except FileNotFoundError:
-            pass
+        # Удаляем файл если он существует
+        file_path = os.path.join(app.config["UPLOAD_FOLDER"], upload_rec.filename)
+        if os.path.exists(file_path):
+            os.remove(file_path)
 
         db.session.delete(upload_rec)
         db.session.commit()

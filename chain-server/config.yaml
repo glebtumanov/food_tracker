@@ -9,12 +9,21 @@ server:
   description: "API для анализа изображений еды с помощью LangChain и OpenAI"
   version: "1.0.0"
 
-# Настройки OpenAI
-openai:
+# Настройки модели для распознавания изображений
+# Требует точности и детерминизма для определения блюд
+image_recognition_model:
   model: "gpt-4o"
-  temperature: 0.5
+  temperature: 0.3      # Низкая температура для стабильности
   max_tokens: 1000
   timeout: 60
+
+# Настройки модели для анализа питательных веществ
+# Требует гибкости для интерпретации данных и расчетов
+analyze_nutrients_model:
+  model: "gpt-4o"
+  temperature: 0.5      # Средняя температура для баланса точности и гибкости
+  max_tokens: 1000      # Меньше токенов для структурированного вывода
+  timeout: 45           # Быстрее для расчетов
 
 # Настройки Edamam Food Database API
 edamam:
@@ -23,3 +32,10 @@ edamam:
   base_url: "https://api.edamam.com/api/food-database/v2/parser"
   timeout: 30
   max_results: 10
+
+# Настройки логирования
+logging:
+  file: "logs/api_requests.log"  # Файл для логов
+  level: "INFO"                  # Уровень логирования: DEBUG, INFO, WARNING, ERROR
+  max_size_mb: 50               # Максимальный размер файла лога в МБ
+  backup_count: 5               # Количество резервных файлов логов

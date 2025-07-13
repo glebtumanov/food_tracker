@@ -1,5 +1,9 @@
 """
-LangServe сервер для анализа изображений еды.
+LangServe сервер для анализа изображений еды и расчета питательных веществ.
+
+Содержит две основные функции:
+1. Анализ изображений еды (модель image_recognition_model)
+2. Анализ питательных веществ через Edamam API (модель analyze_nutrients_model)
 
 Запуск: python server.py
 """
@@ -7,11 +11,15 @@ LangServe сервер для анализа изображений еды.
 import os
 import base64
 import yaml
+import logging
+import time
 from typing import Dict, Any
 from pathlib import Path
 from contextlib import asynccontextmanager
+from datetime import datetime
+from logging.handlers import RotatingFileHandler
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from langserve import add_routes
 from langchain_core.runnables import RunnableLambda
@@ -58,19 +66,85 @@ def load_config(config_path: str = "config.yaml") -> Dict[str, Any]:
         raise ValueError(f"Ошибка чтения конфигурации: {e}")
 
 
+def setup_logging(log_config: Dict[str, Any]) -> logging.Logger:
+    """Настраивает логирование запросов в файл с ротацией."""
+    log_file = log_config.get("file", "logs/api_requests.log")
+    log_level = log_config.get("level", "INFO")
+    max_size_mb = log_config.get("max_size_mb", 50)
+    backup_count = log_config.get("backup_count", 5)
+
+    # Создаем директорию для логов если её нет
+    log_dir = Path(log_file).parent
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    # Настраиваем логгер
+    logger = logging.getLogger("chain_server_api")
+    logger.setLevel(getattr(logging, log_level.upper()))
+
+    # Убираем существующие обработчики
+    logger.handlers.clear()
+
+    # Создаем форматтер
+    formatter = logging.Formatter(
+        '%(asctime)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+
+    # Файловый обработчик с ротацией
+    max_bytes = max_size_mb * 1024 * 1024  # Конвертируем МБ в байты
+    file_handler = RotatingFileHandler(
+        log_file,
+        maxBytes=max_bytes,
+        backupCount=backup_count,
+        encoding='utf-8'
+    )
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+
+    # Консольный обработчик для ошибок
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.ERROR)
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+
+    return logger
+
+
 def create_food_analyzer_with_config(config: Dict[str, Any]) -> FoodImageAnalyzer:
-    """Создает анализатор с настройками из конфигурации."""
-    openai_config = config.get("openai", {})
+    """Создает анализатор изображений с настройками из конфигурации."""
+    image_config = config.get("image_recognition_model", {})
 
     return FoodImageAnalyzer(
-        model_name=openai_config.get("model", "gpt-4o"),
-        temperature=openai_config.get("temperature", 0.1),
-        max_tokens=openai_config.get("max_tokens", 1000)
+        model_name=image_config.get("model", "gpt-4o"),
+        temperature=image_config.get("temperature", 0.1),
+        max_tokens=image_config.get("max_tokens", 1000)
+    )
+
+
+def create_nutrients_analyzer_with_config(config: Dict[str, Any]) -> EdamamFoodSearcher:
+    """Создает анализатор питательных веществ с настройками из конфигурации."""
+    edamam_config = config.get("edamam", {})
+    nutrients_config = config.get("analyze_nutrients_model", {})
+
+    return EdamamFoodSearcher(
+        app_id=edamam_config.get("app_id"),
+        app_key=edamam_config.get("app_key"),
+        base_url=edamam_config.get("base_url"),
+        timeout=edamam_config.get("timeout", 30),
+        max_results=edamam_config.get("max_results", 10),
+        model_name=nutrients_config.get("model", "gpt-4o"),
+        temperature=nutrients_config.get("temperature", 0.5),
+        max_tokens=nutrients_config.get("max_tokens", 800),
+        request_timeout=nutrients_config.get("timeout", 45)
     )
 
 
 # Загружаем конфигурацию
 config = load_config()
+
+# Настраиваем логирование
+logging_config = config.get("logging", {})
+api_logger = setup_logging(logging_config)
 
 # Глобальные экземпляры сервисов
 analyzer: FoodImageAnalyzer | None = None
@@ -83,32 +157,36 @@ async def lifespan(app: FastAPI):
     global analyzer, food_searcher
 
     # Startup
+    api_logger.info("[STARTUP] Запуск chain-server...")
+
     if not os.getenv("OPENAI_API_KEY"):
+        api_logger.error("[STARTUP] OPENAI_API_KEY не найден в переменных окружения")
         raise ValueError("OPENAI_API_KEY не найден в переменных окружения")
 
-    analyzer = create_food_analyzer_with_config(config)
-    print("✅ Анализатор изображений инициализирован")
+    try:
+        analyzer = create_food_analyzer_with_config(config)
+        api_logger.info("[STARTUP] ✅ Анализатор изображений инициализирован")
+        print("✅ Анализатор изображений инициализирован")
 
-    # Инициализация анализатора питательных веществ
-    edamam_config = config.get("edamam", {})
-    openai_config = config.get("openai", {})
-    food_searcher = EdamamFoodSearcher(
-        app_id=edamam_config.get("app_id"),
-        app_key=edamam_config.get("app_key"),
-        base_url=edamam_config.get("base_url"),
-        timeout=edamam_config.get("timeout", 30),
-        max_results=edamam_config.get("max_results", 10),
-        model_name=openai_config.get("model", "gpt-4o"),
-        temperature=openai_config.get("temperature", 0.1)
-    )
-    print("✅ Поисковик Edamam инициализирован")
+        # Инициализация анализатора питательных веществ
+        food_searcher = create_nutrients_analyzer_with_config(config)
+        api_logger.info("[STARTUP] ✅ Анализатор питательных веществ инициализирован")
+        print("✅ Анализатор питательных веществ инициализирован")
+
+        api_logger.info("[STARTUP] 🚀 Chain-server готов к работе")
+
+    except Exception as e:
+        api_logger.error(f"[STARTUP] Ошибка инициализации сервисов: {str(e)}")
+        raise
 
     yield
 
     # Shutdown
+    api_logger.info("[SHUTDOWN] Завершение работы chain-server...")
     analyzer = None
     food_searcher = None
-    print("🔄 Сервисы отключены")
+    api_logger.info("[SHUTDOWN] 🔄 Анализаторы отключены")
+    print("🔄 Анализаторы отключены")
 
 
 class ImageAnalysisRequest(BaseModel):
@@ -144,6 +222,46 @@ app.add_middleware(
 )
 
 
+# Middleware для логирования запросов
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    """Логирует все HTTP запросы."""
+    start_time = time.time()
+
+    # Получаем информацию о запросе
+    client_ip = request.client.host if request.client else "unknown"
+    method = request.method
+    url = str(request.url)
+    headers = dict(request.headers)
+    user_agent = headers.get("user-agent", "unknown")
+
+    # Логируем начало запроса
+    api_logger.info(f"[REQUEST] {method} {url} from {client_ip} | UA: {user_agent}")
+
+    # Обрабатываем запрос
+    try:
+        response = await call_next(request)
+
+        # Вычисляем время обработки
+        process_time = time.time() - start_time
+
+        # Логируем завершение запроса
+        api_logger.info(
+            f"[RESPONSE] {method} {url} | Status: {response.status_code} | "
+            f"Time: {process_time:.3f}s | IP: {client_ip}"
+        )
+
+        return response
+
+    except Exception as e:
+        process_time = time.time() - start_time
+        api_logger.error(
+            f"[ERROR] {method} {url} | Error: {str(e)} | "
+            f"Time: {process_time:.3f}s | IP: {client_ip}"
+        )
+        raise
+
+
 
 
 def _save_base64_image(image_base64: str, filename: str) -> str:
@@ -176,33 +294,53 @@ async def analyze_image(request: ImageAnalysisRequest) -> ImageAnalysisResponse:
     Returns:
         Результат анализа изображения
     """
+    api_logger.info(f"[ANALYZE] Получен запрос на анализ изображения | filename: {request.filename}")
+
     if analyzer is None:
+        api_logger.error("[ANALYZE] Анализатор не инициализирован")
         raise HTTPException(status_code=500, detail="Анализатор не инициализирован")
 
     try:
         # Определяем путь к изображению
         if request.image_path:
             image_path = request.image_path
+            api_logger.info(f"[ANALYZE] Использую локальный файл: {image_path}")
         elif request.image_base64:
             if not request.filename:
+                api_logger.error("[ANALYZE] Не указан filename для base64 изображения")
                 raise HTTPException(status_code=400, detail="Для base64 изображения нужен filename")
             image_path = _save_base64_image(request.image_base64, request.filename)
+            api_logger.info(f"[ANALYZE] Сохранено base64 изображение: {image_path}")
         else:
+            api_logger.error("[ANALYZE] Не указан путь к изображению или base64 данные")
             raise HTTPException(status_code=400, detail="Укажите image_path или image_base64")
 
         # Анализируем изображение
+        api_logger.info(f"[ANALYZE] Начинаю анализ изображения: {image_path}")
         result = analyzer.analyze_image(image_path)
+
+        # Логируем результат
+        if result.get("error"):
+            api_logger.error(f"[ANALYZE] Ошибка анализа: {result['error']}")
+        else:
+            dishes_count = len(result.get("dishes", []))
+            confidence = result.get("confidence", 0)
+            api_logger.info(f"[ANALYZE] Анализ завершен | блюд: {dishes_count} | уверенность: {confidence:.2%}")
 
         # Удаляем временный файл если создавали
         if request.image_base64:
             try:
                 os.remove(image_path)
-            except:
-                pass
+                api_logger.debug(f"[ANALYZE] Удален временный файл: {image_path}")
+            except Exception as cleanup_error:
+                api_logger.warning(f"[ANALYZE] Не удалось удалить временный файл {image_path}: {cleanup_error}")
 
         return ImageAnalysisResponse(**result)
 
+    except HTTPException:
+        raise
     except Exception as e:
+        api_logger.error(f"[ANALYZE] Неожиданная ошибка: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -217,25 +355,42 @@ async def analyze_nutrients(request: FoodSearchRequest) -> Dict[str, Any]:
     Returns:
         Результат анализа питательных веществ
     """
+    api_logger.info(f"[NUTRIENTS] Запрос анализа нутриентов | блюдо: '{request.dish}' | количество: {request.amount} {request.unit}")
+
     if food_searcher is None:
+        api_logger.error("[NUTRIENTS] Поисковик еды не инициализирован")
         raise HTTPException(status_code=500, detail="Поисковик еды не инициализирован")
 
     try:
         result = food_searcher.analyze_dish_nutrients(request.dish, request.amount, request.unit)
+
+        # Логируем результат
+        if result.get("error"):
+            api_logger.error(f"[NUTRIENTS] Ошибка анализа нутриентов для '{request.dish}': {result['error']}")
+        else:
+            calories = result.get("calories", 0)
+            protein = result.get("protein", 0)
+            api_logger.info(f"[NUTRIENTS] Анализ завершен для '{request.dish}' | калории: {calories:.1f} ккал | белки: {protein:.1f} г")
+
         return result
     except Exception as e:
+        api_logger.error(f"[NUTRIENTS] Неожиданная ошибка при анализе '{request.dish}': {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/health")
 async def health_check():
     """Проверка состояния сервера."""
-    return {
+    status = {
         "status": "healthy",
-        "analyzer_ready": analyzer is not None,
-        "food_searcher_ready": food_searcher is not None,
+        "image_analyzer_ready": analyzer is not None,
+        "nutrients_analyzer_ready": food_searcher is not None,
         "openai_key_set": bool(os.getenv("OPENAI_API_KEY"))
     }
+
+    api_logger.debug(f"[HEALTH] Проверка состояния | image_analyzer: {status['image_analyzer_ready']} | nutrients_analyzer: {status['nutrients_analyzer_ready']}")
+
+    return status
 
 
 # Создаем цепочки для LangServe

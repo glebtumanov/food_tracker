@@ -84,8 +84,8 @@ class Upload(db.Model):
     crc = db.Column(db.String(16), nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
-    # Контекст для интеграции с Edamam API
-    edamam_context = db.Column(db.Text, nullable=True)
+    # Результат анализа нутриентов в формате JSON
+    nutrients_json = db.Column(db.Text, nullable=True)
 
 @login_manager.user_loader  # type: ignore
 def load_user(user_id: str):
@@ -192,7 +192,7 @@ def analyze_image_with_chain_server(image_path: str) -> Dict[str, Any]:
 
     if response.status_code == 200:
         result = response.json()
-        print(json.dumps(result, indent=4, ensure_ascii=False))
+        print(json.dumps(result, indent=2, ensure_ascii=False))
         # Убираем поле error если оно None (успешный анализ)
         if result.get("error") is None:
             result.pop("error", None)
@@ -356,8 +356,8 @@ def create_app() -> Flask:
         if "crc" not in upload_cols:
             alter_stmts.append("ALTER TABLE upload ADD COLUMN crc VARCHAR(16) NOT NULL DEFAULT '';")
 
-        if "edamam_context" not in upload_cols:
-            alter_stmts.append("ALTER TABLE upload ADD COLUMN edamam_context TEXT;")
+        if "nutrients_json" not in upload_cols:
+            alter_stmts.append("ALTER TABLE upload ADD COLUMN nutrients_json TEXT;")
 
         if alter_stmts:
             with engine.begin() as conn:
@@ -453,7 +453,9 @@ def create_app() -> Flask:
 
         upload_record.ingredients_md = ingredients_md
         if ingredients_json:
-            upload_record.ingredients_json = json.dumps(ingredients_json, ensure_ascii=False)
+            upload_record.ingredients_json = json.dumps(ingredients_json, indent=2, ensure_ascii=False)
+        # При обновлении ingredients_json очищаем nutrients_json
+        upload_record.nutrients_json = None
         db.session.commit()
 
         return jsonify({"success": True})
@@ -474,9 +476,14 @@ def create_app() -> Flask:
         if upload_record.ingredients_json:
             ingredients_json = json.loads(upload_record.ingredients_json)
 
+        nutrients_json = None
+        if upload_record.nutrients_json:
+            nutrients_json = json.loads(upload_record.nutrients_json)
+
         return jsonify({
             "ingredients_md": upload_record.ingredients_md,
             "ingredients_json": ingredients_json,
+            "nutrients_json": nutrients_json,
             "upload_id": upload_record.id
         })
 
@@ -570,7 +577,9 @@ def create_app() -> Flask:
 
         # Сохраняем в базу данных
         upload_record.ingredients_md = ingredients_text
-        upload_record.ingredients_json = json.dumps(analysis_result, ensure_ascii=False)
+        upload_record.ingredients_json = json.dumps(analysis_result, indent=2, ensure_ascii=False)
+        # При обновлении ingredients_json очищаем nutrients_json
+        upload_record.nutrients_json = None
         db.session.commit()
 
         return jsonify({
@@ -593,9 +602,18 @@ def create_app() -> Flask:
         dish = data.get("dish")
         amount = data.get("amount", 100)
         unit = data.get("unit", "грамм")
+        upload_id = data.get("upload_id")
+        is_first_dish = data.get("is_first_dish", False)
 
         if not dish:
             return jsonify({"error": "Не указано блюдо"}), 400
+
+        # Если указан upload_id, проверяем права доступа
+        upload_record = None
+        if upload_id:
+            upload_record = db.get_or_404(Upload, upload_id)
+            if upload_record.user_id != current_user.id:
+                return jsonify({"error": "Доступ запрещен"}), 403
 
         # Настройки chain-сервера
         chain_config = config.get("chain_server", {})
@@ -625,6 +643,42 @@ def create_app() -> Flask:
 
             if response.status_code == 200:
                 result = response.json()
+
+                                # Сохраняем результат в базу данных, если указан upload_id
+                if upload_record:
+                    # Получаем существующие данные нутриентов
+                    existing_nutrients = []
+                    if not is_first_dish and upload_record.nutrients_json:
+                        try:
+                            existing_data = json.loads(upload_record.nutrients_json)
+                            if isinstance(existing_data, list):
+                                existing_nutrients = existing_data
+                        except (json.JSONDecodeError, TypeError):
+                            existing_nutrients = []
+
+                    # Добавляем новый результат с информацией о блюде
+                    result_with_dish = {
+                        "dish": dish,
+                        "amount": amount,
+                        "unit": unit,
+                        "nutrients": result,
+                        "analyzed_at": datetime.utcnow().isoformat()
+                    }
+
+                    # Проверяем, есть ли уже результат для этого блюда
+                    updated = False
+                    for i, existing in enumerate(existing_nutrients):
+                        if existing.get("dish") == dish and existing.get("amount") == amount and existing.get("unit") == unit:
+                            existing_nutrients[i] = result_with_dish
+                            updated = True
+                            break
+
+                    if not updated:
+                        existing_nutrients.append(result_with_dish)
+
+                    upload_record.nutrients_json = json.dumps(existing_nutrients, indent=2, ensure_ascii=False)
+                    db.session.commit()
+
                 return jsonify(result)
             else:
                 error_msg = f"Ошибка chain-сервера: {response.status_code}"
@@ -640,6 +694,23 @@ def create_app() -> Flask:
 
         except requests.RequestException as e:
             return jsonify({"error": f"Ошибка соединения: {str(e)}"}), 500
+
+    @app.get("/get_nutrients/<int:upload_id>")
+    @login_required
+    def get_nutrients(upload_id: int):  # type: ignore
+        """Получает сохраненные данные о нутриентах по upload_id."""
+        upload_record = db.get_or_404(Upload, upload_id)
+        if upload_record.user_id != current_user.id:
+            return jsonify({"error": "Доступ запрещен"}), 403
+
+        nutrients_json = None
+        if upload_record.nutrients_json:
+            nutrients_json = json.loads(upload_record.nutrients_json)
+
+        return jsonify({
+            "nutrients_json": nutrients_json,
+            "upload_id": upload_record.id
+        })
 
     # Обработка 413 — превышен размер файла
     @app.errorhandler(413)

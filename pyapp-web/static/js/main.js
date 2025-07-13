@@ -197,19 +197,7 @@ async function loadSavedAnalysis(filename) {
       }
 
       if (data.ingredients_md && data.ingredients_md.trim()) {
-        // Преобразуем markdown в HTML
-        const htmlText = formatMarkdownToHtml(data.ingredients_md);
-
-        if (analysisResult) {
-          analysisResult.innerHTML = htmlText;
-          analysisResult.style.display = "block";
-        }
-
-        if (analyzeButton) {
-          analyzeButton.textContent = "Определить еду на картинке";
-        }
-
-        // Если есть сохраненные JSON данные, активируем кнопку нутриентов
+        // Если есть JSON данные, используем современный шаблон отображения
         if (data.ingredients_json && nutrientsButton) {
           try {
             // Проверяем, является ли ingredients_json строкой или объектом
@@ -218,14 +206,60 @@ async function loadSavedAnalysis(filename) {
             } else {
               currentAnalysisData = data.ingredients_json;
             }
+
+            // Отображаем результат в том же стиле, что и после анализа
             if (currentAnalysisData.dishes && currentAnalysisData.dishes.length > 0) {
+              renderAnalysisResult(currentAnalysisData);
               nutrientsButton.disabled = false;
               nutrientsButton.textContent = "Определить нутриенты";
+            } else {
+              // Если нет блюд в JSON, используем fallback к markdown
+              const htmlText = formatMarkdownToHtml(data.ingredients_md);
+              if (analysisResult) {
+                analysisResult.innerHTML = htmlText;
+                analysisResult.style.display = "block";
+              }
             }
           } catch (e) {
             console.error("Ошибка парсинга JSON данных:", e);
+            // При ошибке используем fallback к markdown
+            const htmlText = formatMarkdownToHtml(data.ingredients_md);
+            if (analysisResult) {
+              analysisResult.innerHTML = htmlText;
+              analysisResult.style.display = "block";
+            }
+          }
+        } else {
+          // Если нет JSON данных, используем markdown
+          const htmlText = formatMarkdownToHtml(data.ingredients_md);
+          if (analysisResult) {
+            analysisResult.innerHTML = htmlText;
+            analysisResult.style.display = "block";
           }
         }
+
+        if (analyzeButton) {
+          analyzeButton.textContent = "Определить еду на картинке";
+        }
+      }
+
+      // Если есть сохраненные данные нутриентов, отображаем их
+      if (data.nutrients_json && Array.isArray(data.nutrients_json) && data.nutrients_json.length > 0) {
+        // Конвертируем данные в формат, который ожидает renderNutrientResults
+        const nutrientResults = data.nutrients_json.map(item => ({
+          dish: {
+            name: item.dish,
+            amount: item.amount,
+            unit_type: item.unit === 'gram' ? 'грамм' :
+                       item.unit === 'pieces' ? 'штук' :
+                       item.unit === 'piece' ? 'кусок' :
+                       item.unit === 'slice' ? 'ломтик' :
+                       item.unit === 'cup' ? 'чашка' : item.unit
+          },
+          nutrients: item.nutrients
+        }));
+
+        renderNutrientResults(nutrientResults);
       }
     }
   } catch (err) {
@@ -279,14 +313,8 @@ function renderAnalysisResult(analysis) {
   let html = '<div class="analysis-result">';
   html += '<h5 class="mb-3">🍽️ Результат анализа</h5>';
 
-  // Общая информация
-  html += '<div class="row mb-3">';
-  html += `<div class="col-md-12"><strong>Уверенность:</strong> ${(confidence * 100).toFixed(1)}%</div>`;
-  html += '</div>';
-
   // Список блюд
   if (dishes && dishes.length > 0) {
-    html += '<h6 class="mb-2">Обнаруженные блюда:</h6>';
     html += '<div class="list-group">';
 
     dishes.forEach((dish, index) => {
@@ -409,7 +437,7 @@ async function analyzeImage() {
 // Анализ нутриентов
 // -----------------------------------------------------------------------------
 async function analyzeNutrients() {
-  if (!nutrientsButton || !nutrientsResult || !currentAnalysisData) return;
+  if (!nutrientsButton || !nutrientsResult || !currentAnalysisData || !currentUploadId) return;
 
   const dishes = currentAnalysisData.dishes;
   if (!dishes || dishes.length === 0) {
@@ -432,52 +460,78 @@ async function analyzeNutrients() {
   nutrientsResult.style.display = "block";
 
   try {
-    // Отправляем запросы для всех блюд
-    const nutrientPromises = dishes.map(dish => {
+    // Отправляем запросы для всех блюд последовательно
+    const nutrientResults = [];
+
+    for (let i = 0; i < dishes.length; i++) {
+      const dish = dishes[i];
+
+      // Переводим единицы измерения на английский язык
+      let unitInEnglish;
+      switch (dish.unit_type) {
+        case "штук":
+          unitInEnglish = "pieces";
+          break;
+        case "кусок":
+          unitInEnglish = "piece";
+          break;
+        case "ломтик":
+          unitInEnglish = "slice";
+          break;
+        case "чашка":
+          unitInEnglish = "cup";
+          break;
+        case "грамм":
+          unitInEnglish = "gram";
+          break;
+        default:
+          unitInEnglish = "gram";
+          break;
+      }
+
       const requestData = {
         dish: dish.name_en || dish.name, // Используем английское название или русское
         amount: dish.amount || 100,
-        unit: dish.unit_type === "штук" ? "грамм" :
-              dish.unit_type === "кусок" ? "грамм" :
-              dish.unit_type === "ломтик" ? "грамм" :
-              dish.unit_type === "чашка" ? "грамм" : "грамм"
+        unit: unitInEnglish,
+        upload_id: currentUploadId, // Добавляем upload_id для сохранения в БД
+        is_first_dish: i === 0 // Первое блюдо помечаем как первое
       };
 
-      return fetch(analyzeNutrientsUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(requestData),
-      });
-    });
+      // Логируем запрос для отладки
+      console.log(`🔍 Запрос нутриентов: блюдо='${requestData.dish}', количество=${requestData.amount}, единица='${requestData.unit}', первое=${requestData.is_first_dish}`);
 
-    // Ждем все ответы
-    const responses = await Promise.all(nutrientPromises);
+      try {
+        const response = await fetch(analyzeNutrientsUrl, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(requestData),
+        });
 
-    // Обрабатываем результаты
-    const nutrientResults = [];
-    for (let i = 0; i < responses.length; i++) {
-      const response = responses[i];
-      const dish = dishes[i];
-
-      if (response.ok) {
-        const data = await response.json();
-        if (data.error) {
-          nutrientResults.push({
-            dish: dish,
-            error: data.error
-          });
+        if (response.ok) {
+          const data = await response.json();
+          if (data.error) {
+            nutrientResults.push({
+              dish: dish,
+              error: data.error
+            });
+          } else {
+            nutrientResults.push({
+              dish: dish,
+              nutrients: data
+            });
+          }
         } else {
           nutrientResults.push({
             dish: dish,
-            nutrients: data
+            error: `Ошибка HTTP: ${response.status}`
           });
         }
-      } else {
+      } catch (err) {
         nutrientResults.push({
           dish: dish,
-          error: `Ошибка HTTP: ${response.status}`
+          error: `Ошибка соединения: ${err.message}`
         });
       }
     }
@@ -503,8 +557,40 @@ async function analyzeNutrients() {
 function renderNutrientResults(results) {
   if (!nutrientsResult) return;
 
-  let html = '<div class="nutrients-results">';
+  // Подсчитываем суммарные значения
+  let totalCalories = 0;
+  let totalProtein = 0;
+  let totalFat = 0;
+  let totalCarbohydrates = 0;
+  let totalFiber = 0;
+  let successfulResults = 0;
+
+  results.forEach((result) => {
+    if (result.nutrients && !result.error) {
+      const nutrients = result.nutrients;
+      if (nutrients.calories !== undefined) {
+        totalCalories += nutrients.calories;
+      }
+      if (nutrients.protein !== undefined) {
+        totalProtein += nutrients.protein;
+      }
+      if (nutrients.fat !== undefined) {
+        totalFat += nutrients.fat;
+      }
+      if (nutrients.carbohydrates !== undefined) {
+        totalCarbohydrates += nutrients.carbohydrates;
+      }
+      if (nutrients.fiber !== undefined) {
+        totalFiber += nutrients.fiber;
+      }
+      successfulResults++;
+    }
+  });
+
+    let html = '<div class="nutrients-results">';
   html += '<h5 class="mb-3">🥗 Питательная ценность блюд</h5>';
+
+  html += '<h6 class="mb-3">Детализация по блюдам:</h6>';
 
   results.forEach((result, index) => {
     const dish = result.dish;
@@ -526,35 +612,35 @@ function renderNutrientResults(results) {
 
       if (nutrients.calories !== undefined) {
         html += `<div class="nutrient-stat">
-          <span class="label">Калории</span>
+          <span class="label">🔥 Калории</span>
           <span class="value">${nutrients.calories.toFixed(1)} ккал</span>
         </div>`;
       }
 
       if (nutrients.protein !== undefined) {
         html += `<div class="nutrient-stat">
-          <span class="label">Белки</span>
+          <span class="label">🥩 Белки</span>
           <span class="value">${nutrients.protein.toFixed(1)} г</span>
         </div>`;
       }
 
       if (nutrients.fat !== undefined) {
         html += `<div class="nutrient-stat">
-          <span class="label">Жиры</span>
+          <span class="label">🧈 Жиры</span>
           <span class="value">${nutrients.fat.toFixed(1)} г</span>
         </div>`;
       }
 
       if (nutrients.carbohydrates !== undefined) {
         html += `<div class="nutrient-stat">
-          <span class="label">Углеводы</span>
+          <span class="label">🍞 Углеводы</span>
           <span class="value">${nutrients.carbohydrates.toFixed(1)} г</span>
         </div>`;
       }
 
       if (nutrients.fiber !== undefined) {
         html += `<div class="nutrient-stat">
-          <span class="label">Клетчатка</span>
+          <span class="label">🌾 Клетчатка</span>
           <span class="value">${nutrients.fiber.toFixed(1)} г</span>
         </div>`;
       }
@@ -564,6 +650,51 @@ function renderNutrientResults(results) {
 
     html += '</div>';
   });
+
+    // Добавляем суммарную информацию если есть успешные результаты
+  if (successfulResults > 0) {
+    html += '<div class="nutrient-item mt-4">';
+    html += '<h6 class="text-primary">📊 Итог по всем блюдам на фото</h6>';
+            html += '<div class="nutrient-stats">';
+
+        if (totalCalories > 0) {
+      html += `<div class="nutrient-stat">
+        <span class="label">🔥 Калории</span>
+        <span class="value">${totalCalories.toFixed(1)} ккал</span>
+      </div>`;
+    }
+
+    if (totalProtein > 0) {
+      html += `<div class="nutrient-stat">
+        <span class="label">🥩 Белки</span>
+        <span class="value">${totalProtein.toFixed(1)} г</span>
+      </div>`;
+    }
+
+    if (totalFat > 0) {
+      html += `<div class="nutrient-stat">
+        <span class="label">🧈 Жиры</span>
+        <span class="value">${totalFat.toFixed(1)} г</span>
+      </div>`;
+    }
+
+    if (totalCarbohydrates > 0) {
+      html += `<div class="nutrient-stat">
+        <span class="label">🍞 Углеводы</span>
+        <span class="value">${totalCarbohydrates.toFixed(1)} г</span>
+      </div>`;
+    }
+
+    if (totalFiber > 0) {
+      html += `<div class="nutrient-stat">
+        <span class="label">🌾 Клетчатка</span>
+        <span class="value">${totalFiber.toFixed(1)} г</span>
+      </div>`;
+    }
+
+    html += '</div>';
+    html += '</div>';
+  }
 
   html += '</div>';
 

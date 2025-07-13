@@ -186,6 +186,7 @@ pyapp-web/instance/*
 
 # Configuration files
 chain-server/temp_images/
+pyapp-web/config.yaml
 
 test-chains.ipynb
 EDAMAM_API_test_1.ipynb

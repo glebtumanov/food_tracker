@@ -105,24 +105,95 @@ def _send_confirmation_email(app: Flask, user: User) -> None:
     # В демо-режиме просто выводим ссылку в лог.
     app.logger.info("Ссылка для подтверждения %s: %s", user.email, confirm_url)
 
-    # Пример для боевой отправки через SMTP (требует настроек MAIL_*). Закомментировано.
-    """
-    msg = EmailMessage()
-    msg["Subject"] = "Подтвердите регистрацию"
-    msg["From"] = app.config["MAIL_DEFAULT_SENDER"]
-    msg["To"] = user.email
-    msg.set_content(f"Для подтверждения перейдите по ссылке: {confirm_url}")
+    # Отправляем письмо через SMTP
+    try:
+        msg = EmailMessage()
+        msg["Subject"] = "Подтвердите регистрацию в Food Tracker"
+        msg["From"] = app.config["MAIL_DEFAULT_SENDER"]
+        msg["To"] = user.email
 
-    context = ssl.create_default_context()
-    with smtplib.SMTP_SSL(app.config["MAIL_SERVER"], app.config["MAIL_PORT"], context=context) as smtp:
-        smtp.login(app.config["MAIL_USERNAME"], app.config["MAIL_PASSWORD"])
-        smtp.send_message(msg)
-    """
+        # HTML содержимое письма
+        html_content = f"""
+        <html>
+        <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+            <div style="background-color: #f8f9fa; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
+                <h2 style="color: #198754; margin: 0;">🍽️ Food Tracker</h2>
+                <p style="color: #6c757d; margin: 10px 0 0 0;">Анализ питания с помощью ИИ</p>
+            </div>
+
+            <h3 style="color: #212529;">Подтверждение регистрации</h3>
+
+            <p style="color: #495057; line-height: 1.6;">
+                Здравствуйте!<br><br>
+                Вы зарегистрировались в приложении Food Tracker.
+                Для завершения регистрации необходимо подтвердить ваш email адрес.
+            </p>
+
+            <div style="text-align: center; margin: 30px 0;">
+                <a href="{confirm_url}"
+                   style="background-color: #198754; color: white; padding: 12px 24px;
+                          text-decoration: none; border-radius: 6px; font-weight: 500;
+                          display: inline-block;">
+                    Подтвердить email
+                </a>
+            </div>
+
+            <p style="color: #6c757d; font-size: 14px; line-height: 1.5;">
+                Если кнопка не работает, скопируйте и вставьте следующую ссылку в адресную строку браузера:<br>
+                <a href="{confirm_url}" style="color: #0d6efd; word-break: break-all;">{confirm_url}</a>
+            </p>
+
+            <hr style="border: none; border-top: 1px solid #dee2e6; margin: 30px 0;">
+
+            <p style="color: #6c757d; font-size: 12px; margin: 0;">
+                Это письмо было отправлено автоматически. Если вы не регистрировались в Food Tracker,
+                просто проигнорируйте это письмо.
+            </p>
+        </body>
+        </html>
+        """
+
+        # Текстовая версия письма
+        text_content = f"""
+        Food Tracker - Подтверждение регистрации
+
+        Здравствуйте!
+
+        Вы зарегистрировались в приложении Food Tracker.
+        Для завершения регистрации необходимо подтвердить ваш email адрес.
+
+        Перейдите по ссылке для подтверждения:
+        {confirm_url}
+
+        Если вы не регистрировались в Food Tracker, просто проигнорируйте это письмо.
+        """
+
+        msg.set_content(text_content)
+        msg.add_alternative(html_content, subtype='html')
+
+        # Отправляем письмо
+        context = ssl.create_default_context()
+        if app.config.get("MAIL_USE_SSL", True):
+            with smtplib.SMTP_SSL(app.config["MAIL_SERVER"], app.config["MAIL_PORT"], context=context) as smtp:
+                smtp.login(app.config["MAIL_USERNAME"], app.config["MAIL_PASSWORD"])
+                smtp.send_message(msg)
+        else:
+            with smtplib.SMTP(app.config["MAIL_SERVER"], app.config["MAIL_PORT"]) as smtp:
+                if app.config.get("MAIL_USE_TLS", True):
+                    smtp.starttls(context=context)
+                smtp.login(app.config["MAIL_USERNAME"], app.config["MAIL_PASSWORD"])
+                smtp.send_message(msg)
+
+        app.logger.info("Письмо подтверждения отправлено на %s", user.email)
+
+    except Exception as e:
+        app.logger.error("Ошибка отправки письма подтверждения для %s: %s", user.email, str(e))
+        # В случае ошибки отправки письма, продолжаем работу (письмо уже залогировано)
 
 # -------------------- Сброс пароля --------------------
 
 def _send_reset_email(app: Flask, user: User) -> None:
-    """Формирует и отправляет ссылку для сброса пароля (логируется)."""
+    """Формирует и отправляет ссылку для сброса пароля."""
 
     serializer = URLSafeTimedSerializer(app.config["SECRET_KEY"])
     token = serializer.dumps(user.email, salt="password-reset-salt")
@@ -131,19 +202,98 @@ def _send_reset_email(app: Flask, user: User) -> None:
     # Пока вместо реальной отправки письма выводим ссылку в лог
     app.logger.info("Ссылка для сброса пароля %s: %s", user.email, reset_url)
 
-    # Шаблон для полноценной отправки (закомментировано)
-    """
-    msg = EmailMessage()
-    msg["Subject"] = "Сброс пароля"
-    msg["From"] = app.config["MAIL_DEFAULT_SENDER"]
-    msg["To"] = user.email
-    msg.set_content(f"Перейдите по ссылке для сброса пароля: {reset_url}")
+    # Отправляем письмо через SMTP
+    try:
+        msg = EmailMessage()
+        msg["Subject"] = "Сброс пароля - Food Tracker"
+        msg["From"] = app.config["MAIL_DEFAULT_SENDER"]
+        msg["To"] = user.email
 
-    context = ssl.create_default_context()
-    with smtplib.SMTP_SSL(app.config["MAIL_SERVER"], app.config["MAIL_PORT"], context=context) as smtp:
-        smtp.login(app.config["MAIL_USERNAME"], app.config["MAIL_PASSWORD"])
-        smtp.send_message(msg)
-    """
+        # HTML содержимое письма
+        html_content = f"""
+        <html>
+        <body style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+            <div style="background-color: #f8f9fa; padding: 20px; border-radius: 8px; margin-bottom: 20px;">
+                <h2 style="color: #198754; margin: 0;">🍽️ Food Tracker</h2>
+                <p style="color: #6c757d; margin: 10px 0 0 0;">Анализ питания с помощью ИИ</p>
+            </div>
+
+            <h3 style="color: #212529;">Сброс пароля</h3>
+
+            <p style="color: #495057; line-height: 1.6;">
+                Здравствуйте!<br><br>
+                Вы запросили сброс пароля для вашего аккаунта в Food Tracker.
+                Для создания нового пароля перейдите по ссылке ниже.
+            </p>
+
+            <div style="text-align: center; margin: 30px 0;">
+                <a href="{reset_url}"
+                   style="background-color: #dc3545; color: white; padding: 12px 24px;
+                          text-decoration: none; border-radius: 6px; font-weight: 500;
+                          display: inline-block;">
+                    Сбросить пароль
+                </a>
+            </div>
+
+            <p style="color: #6c757d; font-size: 14px; line-height: 1.5;">
+                Если кнопка не работает, скопируйте и вставьте следующую ссылку в адресную строку браузера:<br>
+                <a href="{reset_url}" style="color: #0d6efd; word-break: break-all;">{reset_url}</a>
+            </p>
+
+            <div style="background-color: #fff3cd; border: 1px solid #ffeaa7; padding: 15px; border-radius: 6px; margin: 20px 0;">
+                <p style="color: #856404; margin: 0; font-size: 14px;">
+                    ⚠️ <strong>Важно:</strong> Ссылка действительна только в течение 1 часа после отправки.
+                    Если вы не запрашивали сброс пароля, просто проигнорируйте это письмо.
+                </p>
+            </div>
+
+            <hr style="border: none; border-top: 1px solid #dee2e6; margin: 30px 0;">
+
+            <p style="color: #6c757d; font-size: 12px; margin: 0;">
+                Это письмо было отправлено автоматически. Если у вас есть вопросы о безопасности
+                вашего аккаунта, свяжитесь с поддержкой.
+            </p>
+        </body>
+        </html>
+        """
+
+        # Текстовая версия письма
+        text_content = f"""
+        Food Tracker - Сброс пароля
+
+        Здравствуйте!
+
+        Вы запросили сброс пароля для вашего аккаунта в Food Tracker.
+        Для создания нового пароля перейдите по ссылке ниже.
+
+        Ссылка для сброса пароля:
+        {reset_url}
+
+        ВАЖНО: Ссылка действительна только в течение 1 часа после отправки.
+        Если вы не запрашивали сброс пароля, просто проигнорируйте это письмо.
+        """
+
+        msg.set_content(text_content)
+        msg.add_alternative(html_content, subtype='html')
+
+        # Отправляем письмо
+        context = ssl.create_default_context()
+        if app.config.get("MAIL_USE_SSL", True):
+            with smtplib.SMTP_SSL(app.config["MAIL_SERVER"], app.config["MAIL_PORT"], context=context) as smtp:
+                smtp.login(app.config["MAIL_USERNAME"], app.config["MAIL_PASSWORD"])
+                smtp.send_message(msg)
+        else:
+            with smtplib.SMTP(app.config["MAIL_SERVER"], app.config["MAIL_PORT"]) as smtp:
+                if app.config.get("MAIL_USE_TLS", True):
+                    smtp.starttls(context=context)
+                smtp.login(app.config["MAIL_USERNAME"], app.config["MAIL_PASSWORD"])
+                smtp.send_message(msg)
+
+        app.logger.info("Письмо сброса пароля отправлено на %s", user.email)
+
+    except Exception as e:
+        app.logger.error("Ошибка отправки письма сброса пароля для %s: %s", user.email, str(e))
+        # В случае ошибки отправки письма, продолжаем работу (письмо уже залогировано)
 
 # ----------------------------------------------------------------------------
 # Вспомогательные функции
@@ -301,12 +451,17 @@ def create_app() -> Flask:
     security_config = config["security"]
     mail_config = config["mail"]
 
+    # Автоматически строим правильный путь к базе данных
+    app_dir = Path(__file__).resolve().parent
+    db_path = app_dir / "instance" / "app.db"
+    database_url = f"sqlite:///{db_path}"
+
     app.config.update(
         UPLOAD_FOLDER=upload_config["folder"],
         MAX_CONTENT_LENGTH=upload_config["max_content_length_mb"] * 1024 * 1024,
         # Безопасность и БД
         SECRET_KEY=os.getenv("SECRET_KEY", security_config.get("secret_key") or _get_or_create_secret_key()),
-        SQLALCHEMY_DATABASE_URI=os.getenv("DATABASE_URL", database_config["url"]),
+        SQLALCHEMY_DATABASE_URI=os.getenv("DATABASE_URL", database_url),
         SQLALCHEMY_TRACK_MODIFICATIONS=database_config["track_modifications"],
         # Настройки cookie «Запомнить меня»
         REMEMBER_COOKIE_DURATION=timedelta(days=security_config["remember_cookie_duration_days"]),
@@ -363,6 +518,70 @@ def create_app() -> Flask:
             with engine.begin() as conn:
                 for stmt in alter_stmts:
                     conn.execute(sa_text(stmt))
+
+        # --- Очистка дубликатов пользователей ---
+        # Проверяем наличие дубликатов email в таблице user
+        try:
+            with engine.begin() as conn:
+                # Находим дубликаты email
+                duplicate_check = conn.execute(sa_text("""
+                    SELECT email, COUNT(*) as count
+                    FROM user
+                    GROUP BY email
+                    HAVING COUNT(*) > 1
+                """)).fetchall()
+
+                if duplicate_check:
+                    app.logger.warning(f"Найдено {len(duplicate_check)} дублированных email адресов")
+
+                    # Для каждого дублированного email оставляем только самую старую запись
+                    for row in duplicate_check:
+                        email = row[0]
+                        app.logger.info(f"Очистка дубликатов для email: {email}")
+
+                        # Удаляем все записи кроме самой старой (с минимальным id)
+                        conn.execute(sa_text("""
+                            DELETE FROM user
+                            WHERE email = :email
+                            AND id NOT IN (
+                                SELECT id FROM (
+                                    SELECT MIN(id) as id
+                                    FROM user
+                                    WHERE email = :email
+                                ) AS keeper
+                            )
+                        """), {"email": email})
+
+                    app.logger.info("Дубликаты пользователей успешно удалены")
+
+                # Проверяем и создаем уникальный индекс на email если его нет
+                try:
+                    # Проверяем существует ли уникальный индекс на email
+                    indexes = conn.execute(sa_text("PRAGMA index_list(user)")).fetchall()
+                    email_unique_exists = False
+
+                    for index in indexes:
+                        index_name = index[1]  # имя индекса
+                        is_unique = index[2]   # уникальный ли
+
+                        if is_unique:
+                            # Проверяем колонки индекса
+                            index_info = conn.execute(sa_text(f"PRAGMA index_info({index_name})")).fetchall()
+                            for col_info in index_info:
+                                if col_info[2] == 'email':  # название колонки
+                                    email_unique_exists = True
+                                    break
+
+                    if not email_unique_exists:
+                        app.logger.info("Создание уникального индекса для email")
+                        conn.execute(sa_text("CREATE UNIQUE INDEX IF NOT EXISTS ix_user_email_unique ON user (email)"))
+
+                except Exception as idx_e:
+                    app.logger.warning(f"Не удалось создать уникальный индекс на email: {idx_e}")
+
+        except Exception as e:
+            app.logger.error(f"Ошибка при очистке дубликатов пользователей: {e}")
+            # Продолжаем работу, не критичная ошибка
 
     # ---------------------------------------------------------------------
     # Роуты
@@ -731,7 +950,7 @@ def create_app() -> Flask:
             if not email or not password:
                 return render_template("register.html", error="Заполните все поля")
 
-            if db.session.execute(select(User).filter_by(email=email)).scalar_one_or_none():
+            if db.session.execute(select(User).filter_by(email=email)).first():
                 return render_template("register.html", error="Email уже зарегистрирован")
 
             user = User(email=email)
@@ -751,7 +970,10 @@ def create_app() -> Flask:
         except (BadSignature, SignatureExpired):
             return "Ссылка недействительна или устарела", 400
 
-        user = db.first_or_404(select(User).filter_by(email=email))
+        user_row = db.session.execute(select(User).filter_by(email=email)).first()
+        if not user_row:
+            return "Пользователь не найден", 404
+        user = user_row[0]
         if not user.is_confirmed:
             user.is_confirmed = True
             db.session.commit()
@@ -768,9 +990,11 @@ def create_app() -> Flask:
 
         if request.method == "POST":
             # email может прийти как скрытое поле, поэтому берём из формы
-            email = request.form.get("email", "").lower()
+            email = request.form.get("email", "").strip().lower()
             password = request.form.get("password", "")
-            user = db.session.execute(select(User).filter_by(email=email)).scalar_one_or_none()
+            # Используем first() для устойчивости к возможным дубликатам
+            user_row = db.session.execute(select(User).filter_by(email=email)).first()
+            user = user_row[0] if user_row else None
 
             if user and user.check_password(password):
                 if not user.is_confirmed:
@@ -784,11 +1008,12 @@ def create_app() -> Flask:
                 login_user(user, remember=True)
 
                 # Сохраняем в сессии последний загруженный файл (если есть)
-                last_upload = db.session.execute(
+                last_upload_row = db.session.execute(
                     select(Upload)
                     .filter_by(user_id=user.id)
                     .order_by(Upload.created_at.desc())
-                ).scalar_one_or_none()
+                ).first()
+                last_upload = last_upload_row[0] if last_upload_row else None
                 if last_upload:
                     session["last_image"] = url_for(
                         "uploaded_file", filename=last_upload.filename, _external=False
@@ -934,7 +1159,8 @@ def create_app() -> Flask:
         if request.method == "POST":
             email = request.form.get("email", "").strip().lower()
             # Не раскрываем, существует ли email
-            user = db.session.execute(select(User).filter_by(email=email)).scalar_one_or_none()
+            user_row = db.session.execute(select(User).filter_by(email=email)).first()
+            user = user_row[0] if user_row else None
             if user:
                 _send_reset_email(app, user)
             # Сообщаем однотипно
@@ -950,7 +1176,10 @@ def create_app() -> Flask:
         except (BadSignature, SignatureExpired):
             return "Ссылка недействительна или устарела", 400
 
-        user = db.first_or_404(select(User).filter_by(email=email))
+        user_row = db.session.execute(select(User).filter_by(email=email)).first()
+        if not user_row:
+            return "Пользователь не найден", 404
+        user = user_row[0]
 
         success: str | None = None
         error: str | None = None

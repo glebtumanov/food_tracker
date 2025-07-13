@@ -828,6 +828,66 @@ def create_app() -> Flask:
         ).scalars().all()
         return render_template("history.html", uploads=uploads)
 
+    @app.get("/nutrition_stats")
+    @login_required
+    def nutrition_stats():  # type: ignore
+        """Статистика потребления нутриентов по дням за последний месяц."""
+        # Получаем записи за последний месяц с анализом нутриентов
+        month_ago = datetime.utcnow() - timedelta(days=30)
+        uploads = db.session.execute(
+            select(Upload)
+            .filter(
+                Upload.user_id == current_user.id,
+                Upload.created_at >= month_ago,
+                Upload.nutrients_json.isnot(None),
+                Upload.nutrients_json != ""
+            )
+            .order_by(Upload.created_at.desc())
+        ).scalars().all()
+
+        # Группируем по дням и суммируем нутриенты
+        daily_stats = {}
+
+        for upload in uploads:
+            try:
+                nutrients_data = json.loads(upload.nutrients_json)
+                if not isinstance(nutrients_data, list):
+                    continue
+
+                # Группируем по дате (без времени)
+                upload_date = upload.created_at.date()
+                date_str = upload_date.strftime('%Y-%m-%d')
+
+                if date_str not in daily_stats:
+                    daily_stats[date_str] = {
+                        'date': upload_date,
+                        'calories': 0,
+                        'protein': 0,
+                        'fat': 0,
+                        'carbohydrates': 0,
+                        'fiber': 0,
+                        'uploads_count': 0
+                    }
+
+                daily_stats[date_str]['uploads_count'] += 1
+
+                # Суммируем нутриенты по всем блюдам в загрузке
+                for dish_data in nutrients_data:
+                    nutrients = dish_data.get('nutrients', {})
+                    daily_stats[date_str]['calories'] += nutrients.get('calories', 0)
+                    daily_stats[date_str]['protein'] += nutrients.get('protein', 0)
+                    daily_stats[date_str]['fat'] += nutrients.get('fat', 0)
+                    daily_stats[date_str]['carbohydrates'] += nutrients.get('carbohydrates', 0)
+                    daily_stats[date_str]['fiber'] += nutrients.get('fiber', 0)
+
+            except (json.JSONDecodeError, TypeError, KeyError):
+                continue
+
+        # Сортируем по дате (новые сначала)
+        sorted_stats = sorted(daily_stats.values(), key=lambda x: x['date'], reverse=True)
+
+        return render_template("nutrition_stats.html", daily_stats=sorted_stats)
+
     @app.get("/use/<int:upload_id>")
     @login_required
     def use_upload(upload_id: int):  # type: ignore

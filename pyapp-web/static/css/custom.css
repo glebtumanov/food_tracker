@@ -5,6 +5,8 @@
   max-width: 600px !important;
   margin: 0 auto;
   padding: 0 20px;
+  width: 100%;
+  box-sizing: border-box;
 }
 
 /* Убираем стандартные отступы Bootstrap */
@@ -73,6 +75,9 @@ h2.display-5 {
   border-radius: 8px;
   width: 100%;
   height: auto;
+  max-width: 100%;
+  display: block;
+  margin: 0 auto;
 }
 
 /* Результаты анализа */
@@ -241,7 +246,7 @@ h2.display-5 {
 @media (max-width: 768px) {
   .container {
     max-width: 100% !important;
-    padding: 0 15px;
+    padding: 0 20px;
   }
 
   h2.display-5 {
@@ -249,7 +254,7 @@ h2.display-5 {
   }
 
   #dropZone {
-    padding: 3rem 2rem !important;
+    padding: 3rem 1.5rem !important;
   }
 
   #previewContainer .row.g-0 {
@@ -262,14 +267,43 @@ h2.display-5 {
     max-width: 100%;
   }
 
-  #previewContainer .card-body {
-    padding-top: 1rem !important;
-    padding-left: 0 !important;
+  #previewContainer .card {
+    margin: 0 !important;
   }
 
-  /* На мобильных устройствах размещаем нутриенты в 2 ряда */
+  #previewContainer .card-body {
+    padding: 1rem !important;
+  }
+
+  #previewContainer img {
+    margin: 0 !important;
+  }
+
+  /* Результаты анализа на мобильных */
+  #analysisResult {
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+
+  #analysisResult .list-group-item {
+    margin: 0 0 0.5rem 0 !important;
+    padding: 0.75rem !important;
+  }
+
+  /* На мобильных устройствах размещаем нутриенты в 3 колонки */
+  #nutrientsResult {
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+
+  #nutrientsResult .nutrient-item {
+    margin: 0 0 0.75rem 0 !important;
+    padding: 0.75rem !important;
+  }
+
   #nutrientsResult .nutrient-stats {
     grid-template-columns: repeat(3, 1fr);
+    gap: 0.25rem;
   }
 
   #nutrientsResult .nutrient-stat {
@@ -283,6 +317,17 @@ h2.display-5 {
 
   #nutrientsResult .nutrient-stat .value {
     font-size: 0.8rem;
+  }
+
+  /* Кнопки на мобильных */
+  #buttonContainer {
+    padding: 1rem !important;
+  }
+
+  #analyzeButton, #nutrientsButton {
+    min-width: 150px;
+    font-size: 0.9rem;
+    padding: 10px 20px;
   }
 }
 
@@ -299,6 +344,76 @@ h2.display-5 {
 .nav-link {
   font-size: 0.9rem;
   padding: 0.5rem 0.75rem !important;
+}
+
+/* Дополнительные стили для очень маленьких экранов */
+@media (max-width: 576px) {
+  .container {
+    padding: 0 15px;
+  }
+
+  h2.display-5 {
+    font-size: 1.75rem;
+    margin-bottom: 1.5rem;
+  }
+
+  #dropZone {
+    padding: 2rem 1rem !important;
+  }
+
+  #dropZone p {
+    font-size: 0.9rem;
+    line-height: 1.3;
+  }
+
+  #buttonContainer {
+    text-align: center;
+  }
+
+  #analyzeButton, #nutrientsButton {
+    min-width: 140px;
+    font-size: 0.85rem;
+    padding: 8px 16px;
+    margin: 0.25rem 0.5rem;
+    display: inline-block;
+  }
+
+  #nutrientsResult .nutrient-stats {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 0.5rem;
+  }
+
+  #nutrientsResult .nutrient-stat {
+    padding: 0.5rem;
+  }
+}
+
+/* Стили для самых маленьких экранов */
+@media (max-width: 480px) {
+  #analyzeButton, #nutrientsButton {
+    display: block;
+    width: 100%;
+    margin: 0.25rem 0;
+    min-width: auto;
+  }
+}
+
+/* Стили для мобильной навигации */
+@media (max-width: 991.98px) {
+  .navbar-nav {
+    padding-top: 0.5rem;
+    border-top: 1px solid #495057;
+    margin-top: 0.5rem;
+  }
+
+  .navbar-nav .nav-link {
+    padding: 0.75rem 0 !important;
+    border-bottom: 1px solid #495057;
+  }
+
+  .navbar-nav .nav-item:last-child .nav-link {
+    border-bottom: none;
+  }
 }
 
 /* Стили для истории запросов */

@@ -27,3 +27,5 @@ python-dotenv>=1.0.0
 typing-extensions>=4.8.0
 PyYAML>=6.0
 requests>=2.31.0
+
+sse_starlette

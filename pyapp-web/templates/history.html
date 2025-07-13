@@ -16,7 +16,18 @@
     <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
       <div class="container">
         <a class="navbar-brand" href="{{ url_for('index') }}">Food-Tracker</a>
-        <div class="collapse navbar-collapse">
+        <button
+          class="navbar-toggler"
+          type="button"
+          data-bs-toggle="collapse"
+          data-bs-target="#navbarNav"
+          aria-controls="navbarNav"
+          aria-expanded="false"
+          aria-label="Toggle navigation"
+        >
+          <span class="navbar-toggler-icon"></span>
+        </button>
+        <div class="collapse navbar-collapse" id="navbarNav">
           <ul class="navbar-nav ms-auto">
             <li class="nav-item">
               <a class="nav-link" href="{{ url_for('index') }}">Главная</a>
@@ -43,10 +54,9 @@
         <table class="table table-dark table-striped align-middle">
           <thead>
             <tr>
-              <th scope="col" class="text-center" style="width: 200px;">Превью</th>
-              <th scope="col" class="text-center" style="width: 180px;">Дата/время</th>
-              <th scope="col" class="text-start">Ингредиенты</th>
-              <th scope="col" class="text-center" style="width: 160px;">Действия</th>
+              <th scope="col" class="text-center" style="width: 250px;">Превью</th>
+              <th scope="col" class="text-center" style="width: 200px;">Дата/время</th>
+              <th scope="col" class="text-center" style="width: 180px;">Действия</th>
             </tr>
           </thead>
           <tbody>
@@ -64,15 +74,6 @@
               </td>
               <td class="text-center small">
                 {{ img.created_at|ru_dt }}
-              </td>
-              <td class="text-start">
-                {% if img.ingredients_md %}
-                  <div class="ingredients-summary">
-                    {{ img.ingredients_md|dishes_only|replace('**', '')|replace('\n', '<br>')|safe|truncate(200) }}
-                  </div>
-                {% else %}
-                  <span class="text-muted">Анализ не проводился</span>
-                {% endif %}
               </td>
               <td class="text-center">
                 <div class="btn-group-vertical btn-group-sm" role="group">

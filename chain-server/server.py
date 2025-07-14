@@ -25,7 +25,8 @@ from langserve import add_routes
 from langchain_core.runnables import RunnableLambda
 from pydantic import BaseModel
 
-from food_analyzer import FoodImageAnalyzer, EdamamFoodSearcher, FoodSearchRequest, NutrientAnalysis
+from food_analyzer import (FoodImageAnalyzer, EdamamFoodSearcher, FoodSearchRequest, NutrientAnalysis,
+                          MultipleDishesRequest, MultipleDishItem, MultipleNutrientAnalysis)
 
 
 # Константы для настроек
@@ -378,6 +379,50 @@ async def analyze_nutrients(request: FoodSearchRequest) -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/analyze-multiple-nutrients")
+async def analyze_multiple_nutrients(request: MultipleDishesRequest) -> Dict[str, Any]:
+    """
+    Анализ питательных веществ множественных блюд через Edamam Food Database API.
+    Отправляет один запрос к LLM для всех блюд вместо отдельных запросов.
+
+    Args:
+        request: Запрос со списком блюд
+
+    Returns:
+        Результат анализа питательных веществ для всех блюд
+    """
+    dishes_str = ", ".join([f"'{dish.dish}'" for dish in request.dishes[:3]])
+    if len(request.dishes) > 3:
+        dishes_str += f" и ещё {len(request.dishes) - 3} блюд"
+
+    api_logger.info(f"[MULTIPLE_NUTRIENTS] Запрос анализа нутриентов множественных блюд | блюд: {len(request.dishes)} | {dishes_str}")
+
+    if food_searcher is None:
+        api_logger.error("[MULTIPLE_NUTRIENTS] Поисковик еды не инициализирован")
+        raise HTTPException(status_code=500, detail="Поисковик еды не инициализирован")
+
+    try:
+        result = food_searcher.analyze_multiple_dishes_nutrients(request.dishes)
+
+        # Логируем результат
+        if result.get("error"):
+            api_logger.error(f"[MULTIPLE_NUTRIENTS] Ошибка анализа множественных нутриентов: {result['error']}")
+        else:
+            total_dishes = result.get("total_dishes", 0)
+            successful_dishes = result.get("successful_dishes", 0)
+            failed_dishes = result.get("failed_dishes", 0)
+
+            # Считаем общие калории
+            total_calories = sum([dish.get("calories", 0) for dish in result.get("dishes", [])])
+
+            api_logger.info(f"[MULTIPLE_NUTRIENTS] Анализ завершен | всего блюд: {total_dishes} | успешно: {successful_dishes} | ошибки: {failed_dishes} | общие калории: {total_calories:.1f} ккал")
+
+        return result
+    except Exception as e:
+        api_logger.error(f"[MULTIPLE_NUTRIENTS] Неожиданная ошибка при анализе множественных блюд: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/health")
 async def health_check():
     """Проверка состояния сервера."""
@@ -434,6 +479,39 @@ def create_nutrient_analysis_chain():
     return RunnableLambda(analysis_wrapper)
 
 
+def create_multiple_nutrient_analysis_chain():
+    """Создает цепочку для анализа питательных веществ множественных блюд через Edamam API."""
+
+    def multiple_analysis_wrapper(inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Обертка для анализа питательных веществ множественных блюд."""
+        if food_searcher is None:
+            return {"error": "Анализатор питательных веществ не инициализирован"}
+
+        dishes_data = inputs.get("dishes", [])
+        if not dishes_data:
+            return {"error": "Не указаны блюда для анализа"}
+
+        # Преобразуем входные данные в список MultipleDishItem
+        dishes = []
+        for dish_data in dishes_data:
+            if isinstance(dish_data, dict):
+                dishes.append(MultipleDishItem(
+                    dish=dish_data.get("dish", ""),
+                    amount=dish_data.get("amount", 100),
+                    unit=dish_data.get("unit", "gram")
+                ))
+
+        if not dishes:
+            return {"error": "Некорректный формат данных о блюдах"}
+
+        result = food_searcher.analyze_multiple_dishes_nutrients(dishes)
+
+        # Возвращаем результат как есть
+        return result
+
+    return RunnableLambda(multiple_analysis_wrapper)
+
+
 # Добавляем LangServe маршруты
 add_routes(
     app,
@@ -447,6 +525,14 @@ add_routes(
     app,
     create_nutrient_analysis_chain(),
     path="/analyze-nutrients",
+    playground_type=LANGSERVE_SETTINGS["playground_type"]
+)
+
+# Добавляем цепочку анализа питательных веществ для множественных блюд
+add_routes(
+    app,
+    create_multiple_nutrient_analysis_chain(),
+    path="/analyze-multiple-nutrients",
     playground_type=LANGSERVE_SETTINGS["playground_type"]
 )
 

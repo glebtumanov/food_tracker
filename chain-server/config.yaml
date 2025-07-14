@@ -15,7 +15,7 @@ image_recognition_model:
   model: "gpt-4o"
   temperature: 0.3      # Низкая температура для стабильности
   max_tokens: 1000
-  timeout: 60
+  timeout: 120
 
 # Настройки модели для анализа питательных веществ
 # Требует гибкости для интерпретации данных и расчетов
@@ -23,14 +23,14 @@ analyze_nutrients_model:
   model: "gpt-4o"
   temperature: 0.5      # Средняя температура для баланса точности и гибкости
   max_tokens: 1000      # Меньше токенов для структурированного вывода
-  timeout: 45           # Быстрее для расчетов
+  timeout: 120           # Быстрее для расчетов
 
 # Настройки Edamam Food Database API
 edamam:
   app_id: "e6a6f9f9"
   app_key: "9e39a6bc205b6e1639628a107b0629c9"
   base_url: "https://api.edamam.com/api/food-database/v2/parser"
-  timeout: 30
+  timeout: 60
   max_results: 10
 
 # Настройки логирования

@@ -231,6 +231,23 @@ class NutrientAnalysis(BaseModel):
     fiber: float = Field(description="Клетчатка в граммах")
 
 
+class MultipleDishItem(BaseModel):
+    """Модель одного блюда в запросе множественного анализа."""
+    dish: str = Field(description="Название блюда для анализа")
+    amount: float = Field(description="Количество блюда")
+    unit: str = Field(default="gram", description="Единица измерения (gram/грамм, pieces/штук, cup/чашка, piece/кусок, slice/ломтик)")
+
+
+class MultipleDishesRequest(BaseModel):
+    """Модель запроса для анализа питательных веществ множественных блюд."""
+    dishes: List[MultipleDishItem] = Field(description="Список блюд для анализа")
+
+
+class MultipleNutrientAnalysis(BaseModel):
+    """Модель результата анализа питательных веществ множественных блюд."""
+    dishes: List[NutrientAnalysis] = Field(description="Список результатов анализа для каждого блюда")
+
+
 class EdamamFoodSearcher:
     """Анализатор питательных веществ через Edamam API и OpenAI."""
 
@@ -265,6 +282,7 @@ class EdamamFoodSearcher:
             request_timeout=request_timeout
         )
         self.nutrient_parser = JsonOutputParser(pydantic_object=NutrientAnalysis)
+        self.multiple_nutrient_parser = JsonOutputParser(pydantic_object=MultipleNutrientAnalysis)
 
         # Системный промпт для анализа питательных веществ
         self.nutrient_prompt = """
@@ -500,6 +518,118 @@ class EdamamFoodSearcher:
                 "nutrients": None
             }
 
+    def _analyze_multiple_nutrients_with_llm(self, edamam_data_list: List[Dict[str, Any]], dishes_info: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Анализ питательных веществ множественных блюд через OpenAI на основе данных Edamam."""
+        try:
+            # Формируем системный промпт для множественного анализа
+            multiple_nutrient_prompt = """
+            Ты эксперт по питанию. Проанализируй данные о нескольких блюдах из Edamam API и определи питательную ценность каждого блюда.
+
+            ВАЖНО: Все данные в Edamam API указаны на 100 грамм продукта!
+
+            Алгоритм расчета:
+            1. Для каждого блюда изучи соответствующие JSON данные от Edamam API
+            2. Найди наиболее подходящий продукт для указанного блюда в разделах "parsed" или "hints"
+            3. КРИТИЧЕСКИ ВАЖНО: выбирай продукт правильного состояния (сырой/приготовленный)
+            4. Возьми значения питательных веществ из поля "nutrients" (они даны на 100г)
+            5. ОБЯЗАТЕЛЬНО пересчитай на указанное количество по формуле:
+               Итоговое_значение = (Значение_на_100г * Указанное_количество_в_граммах) / 100
+
+            Правила выбора продукта:
+            - Для "Cooked oatmeal" ищи "oatmeal, cooked" или "porridge", НЕ "oats, dry"
+            - Для "Hard-boiled egg" ищи "egg, boiled" или "egg, hard-boiled"
+            - Для "Cooked rice" ищи "rice, cooked", НЕ "rice, dry"
+            - Для "Cooked pasta" ищи "pasta, cooked", НЕ "pasta, dry"
+
+            Правила расчета единиц:
+            - ВСЕ данные из API даны на 100г - это критически важно!
+            - ПРИОРИТЕТ: Используй данные из раздела "measures" для точного веса единиц
+
+            Алгоритм определения веса:
+            1. Сначала ищи в разделе "measures" подходящую единицу измерения:
+               * Для "pieces"/"штук" → "Whole", "Serving" или "Unit"
+               * Для "cup"/"чашка" → "Cup"
+               * Для "slice"/"ломтик" → "Slice"
+               * Для "piece"/"кусок" → "Piece" или "Serving"
+               * Для "gram"/"грамм" → "Gram" (обычно 1.0)
+
+            2. Если нашел в measures - используй точный вес из поля "weight"
+            3. Учитывай qualified варианты (например, "large", "medium", "small", "chopped")
+            4. При выборе из нескольких вариантов:
+               - Предпочитай стандартные размеры без qualified (обычные размеры)
+               - Если есть qualified, выбирай "medium" или без спецификации
+               - Логируй в ответе какая единица из measures была использована
+
+            Примеры работы с measures:
+            - "Whole": 40.0 → 1 штука яйца = 40г
+            - "Whole" + "large": 50.0 → 1 крупное яйцо = 50г
+            - "Cup": 136.0 → 1 чашка = 136г
+            - "Serving": 50.0 → 1 порция = 50г
+
+            Fallback значения (если нет в measures):
+            - Для "pieces": яйцо=50г, яблоко=180г, банан=120г, остальное=100г
+            - Для "piece": 1 кусок = 100г
+            - Для "slice": 1 ломтик = 30г (хлеб/сыр), 50г (мясо)
+            - Для "cup": 1 чашка = 200г
+            - Для "gram": используй указанное количество напрямую
+
+            - Округляй результаты до 1 знака после запятой
+            - В поле dish_name укажи название блюда с количеством, как указано в запросе
+
+            Возвращай результат строго в указанном JSON формате для ВСЕХ блюд.
+            """
+
+            # Формируем запрос для LLM с информацией о всех блюдах
+            user_query = f"""
+            Анализируй следующие блюда:
+
+            """
+
+            for i, (dish_info, edamam_data) in enumerate(zip(dishes_info, edamam_data_list), 1):
+                dish = dish_info["dish"]
+                amount = dish_info["amount"]
+                unit = dish_info["unit"]
+                search_term = dish_info.get("search_term", dish)
+
+                user_query += f"""
+            Блюдо {i}:
+            Название: {dish}
+            Количество: {amount} {unit}
+            Поисковый термин в Edamam: {search_term}
+
+            Данные от Edamam API для блюда {i}:
+            {json.dumps(edamam_data, ensure_ascii=False, indent=2)}
+
+            ---
+
+            """
+
+            user_query += """
+            Проанализируй и рассчитай питательную ценность для каждого блюда в указанном количестве.
+            ОБЯЗАТЕЛЬНО выбери продукт правильного состояния (приготовленный/сырой) основываясь на поисковом термине.
+            """
+
+            # Создаем сообщение
+            messages = [
+                HumanMessage(content=f"{multiple_nutrient_prompt}\n\nФормат ответа:\n{self.multiple_nutrient_parser.get_format_instructions()}\n\n{user_query}")
+            ]
+
+            # Получаем ответ от LLM
+            response = self.llm.invoke(messages)
+            nutrients = self.multiple_nutrient_parser.parse(response.content)
+
+            return {
+                "success": True,
+                "nutrients": nutrients
+            }
+
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Ошибка анализа питательных веществ: {str(e)}",
+                "nutrients": None
+            }
+
     def _build_chain(self):
         """Строит цепочку для анализа питательных веществ блюда."""
 
@@ -553,6 +683,129 @@ class EdamamFoodSearcher:
             Результат анализа питательных веществ
         """
         return self.chain.invoke({"dish": dish, "amount": amount, "unit": unit})
+
+    def analyze_multiple_dishes_nutrients(self, dishes: List[MultipleDishItem]) -> Dict[str, Any]:
+        """
+        Анализ питательных веществ множественных блюд.
+
+        Args:
+            dishes: Список блюд для анализа
+
+        Returns:
+            Результат анализа питательных веществ для всех блюд
+        """
+        if not dishes:
+            return {"error": "Не указаны блюда для анализа"}
+
+        print(f"🥗 Анализ множественных нутриентов: {len(dishes)} блюд")
+
+        # Шаг 1: Получаем данные от Edamam для каждого блюда (раздельные запросы)
+        edamam_data_list = []
+        dishes_info = []
+
+        for dish_item in dishes:
+            dish = dish_item.dish.strip()
+            amount = dish_item.amount
+            unit = dish_item.unit
+
+            if not dish:
+                edamam_data_list.append(None)
+                dishes_info.append({
+                    "dish": dish,
+                    "amount": amount,
+                    "unit": unit,
+                    "error": "Пустое название блюда"
+                })
+                continue
+
+            print(f"🔍 Поиск в Edamam: '{dish}' ({amount} {unit})")
+
+            # Получаем данные от Edamam для этого блюда
+            edamam_result = self._search_single_dish(dish)
+
+            if edamam_result.get("success"):
+                edamam_data_list.append(edamam_result["data"])
+                dishes_info.append({
+                    "dish": dish,
+                    "amount": amount,
+                    "unit": unit,
+                    "search_term": edamam_result.get("search_term", dish)
+                })
+            else:
+                edamam_data_list.append(None)
+                dishes_info.append({
+                    "dish": dish,
+                    "amount": amount,
+                    "unit": unit,
+                    "error": edamam_result.get("error", "Ошибка поиска в Edamam")
+                })
+
+        # Проверяем, есть ли успешные результаты
+        successful_dishes = [(data, info) for data, info in zip(edamam_data_list, dishes_info)
+                           if data is not None and "error" not in info]
+
+        if not successful_dishes:
+            return {
+                "error": "Не удалось найти данные ни для одного блюда",
+                "details": dishes_info
+            }
+
+        # Шаг 2: Отправляем один запрос к LLM со всеми успешными данными
+        successful_edamam_data = [item[0] for item in successful_dishes]
+        successful_dishes_info = [item[1] for item in successful_dishes]
+
+        print(f"📊 Отправляем в LLM данные о {len(successful_dishes)} блюдах")
+
+        nutrients_result = self._analyze_multiple_nutrients_with_llm(
+            successful_edamam_data, successful_dishes_info
+        )
+
+        if nutrients_result["success"]:
+            # Объединяем результаты с ошибками (если есть)
+            final_results = []
+
+            # Создаем индекс успешных блюд
+            # JsonOutputParser возвращает словарь, а не объект Pydantic
+            successful_results = nutrients_result["nutrients"]["dishes"]
+            success_idx = 0
+
+            for i, dish_info in enumerate(dishes_info):
+                if "error" in dish_info:
+                    # Добавляем ошибку
+                    final_results.append({
+                        "dish_name": f"{dish_info['dish']} ({dish_info['amount']} {dish_info['unit']})",
+                        "error": dish_info["error"],
+                        "calories": 0.0,
+                        "protein": 0.0,
+                        "fat": 0.0,
+                        "carbohydrates": 0.0,
+                        "fiber": 0.0
+                    })
+                else:
+                    # Добавляем успешный результат
+                    if success_idx < len(successful_results):
+                        result = successful_results[success_idx]
+                        final_results.append({
+                            "dish_name": result.get("dish_name", ""),
+                            "calories": result.get("calories", 0.0),
+                            "protein": result.get("protein", 0.0),
+                            "fat": result.get("fat", 0.0),
+                            "carbohydrates": result.get("carbohydrates", 0.0),
+                            "fiber": result.get("fiber", 0.0)
+                        })
+                        success_idx += 1
+
+            return {
+                "dishes": final_results,
+                "total_dishes": len(dishes),
+                "successful_dishes": len(successful_dishes),
+                "failed_dishes": len(dishes) - len(successful_dishes)
+            }
+        else:
+            return {
+                "error": nutrients_result.get("error", "Ошибка анализа питательных веществ"),
+                "details": dishes_info
+            }
 
 
 def create_food_analyzer() -> FoodImageAnalyzer:

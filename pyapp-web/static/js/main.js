@@ -460,12 +460,10 @@ async function analyzeNutrients() {
   nutrientsResult.style.display = "block";
 
   try {
-    // Отправляем запросы для всех блюд последовательно
-    const nutrientResults = [];
+    // Подготавливаем данные для отправки всех блюд одним запросом
+    const dishesData = [];
 
-    for (let i = 0; i < dishes.length; i++) {
-      const dish = dishes[i];
-
+    for (const dish of dishes) {
       // Переводим единицы измерения на английский язык
       let unitInEnglish;
       switch (dish.unit_type) {
@@ -489,67 +487,126 @@ async function analyzeNutrients() {
           break;
       }
 
-      const requestData = {
+      dishesData.push({
         dish: dish.name_en || dish.name, // Используем английское название или русское
         amount: dish.amount || 100,
-        unit: unitInEnglish,
-        upload_id: currentUploadId, // Добавляем upload_id для сохранения в БД
-        is_first_dish: i === 0 // Первое блюдо помечаем как первое
-      };
-
-      // Логируем запрос для отладки
-      console.log(`🔍 Запрос нутриентов: блюдо='${requestData.dish}', количество=${requestData.amount}, единица='${requestData.unit}', первое=${requestData.is_first_dish}`);
-
-      try {
-        const response = await fetch(analyzeNutrientsUrl, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(requestData),
-        });
-
-        if (response.ok) {
-          const data = await response.json();
-          if (data.error) {
-            nutrientResults.push({
-              dish: dish,
-              error: data.error
-            });
-          } else {
-            nutrientResults.push({
-              dish: dish,
-              nutrients: data
-            });
-          }
-        } else {
-          nutrientResults.push({
-            dish: dish,
-            error: `Ошибка HTTP: ${response.status}`
-          });
-        }
-      } catch (err) {
-        nutrientResults.push({
-          dish: dish,
-          error: `Ошибка соединения: ${err.message}`
-        });
-      }
+        unit: unitInEnglish
+      });
     }
 
-    // Отображаем результаты
-    renderNutrientResults(nutrientResults);
-    nutrientsButton.textContent = "Определить нутриенты";
+    // Отправляем один запрос для всех блюд
+    const requestData = {
+      dishes: dishesData,
+      upload_id: currentUploadId // Добавляем upload_id для сохранения в БД
+    };
+
+    // Логируем запрос для отладки
+    console.log(`🔍 Запрос нутриентов: ${dishes.length} блюд одним запросом`, dishesData);
+
+    const response = await fetch(analyzeNutrientsUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(requestData),
+    });
+
+    // Проверяем на редирект (проблема с аутентификацией)
+    if (response.redirected || response.url.includes('/login')) {
+      nutrientsResult.innerHTML = `
+        <div class="alert alert-warning" role="alert">
+          <h6 class="alert-heading">🔐 Требуется авторизация</h6>
+          <p class="mb-0">Сессия истекла. <a href="/login">Войдите в систему</a> заново.</p>
+        </div>
+      `;
+      return;
+    }
+
+    if (response.ok) {
+      const data = await response.json();
+
+      if (data.error) {
+        // Общая ошибка
+        nutrientsResult.innerHTML = `
+          <div class="alert alert-danger" role="alert">
+            <h6 class="alert-heading">❌ Ошибка анализа нутриентов</h6>
+            <p class="mb-0">${data.error}</p>
+          </div>
+        `;
+      } else {
+        // Успешный результат - преобразуем в старый формат для совместимости с renderNutrientResults
+        const nutrientResults = [];
+
+        if (data.dishes && Array.isArray(data.dishes)) {
+          for (let i = 0; i < data.dishes.length; i++) {
+            const dishResult = data.dishes[i];
+            const originalDish = dishes[i]; // Соответствующее блюдо из анализа изображения
+
+            if (dishResult.error) {
+              nutrientResults.push({
+                dish: originalDish,
+                error: dishResult.error
+              });
+            } else {
+              nutrientResults.push({
+                dish: originalDish,
+                nutrients: dishResult
+              });
+            }
+          }
+        }
+
+        // Отображаем результаты
+        renderNutrientResults(nutrientResults);
+
+        // Логируем статистику
+        const totalDishes = data.total_dishes || dishes.length;
+        const successfulDishes = data.successful_dishes || nutrientResults.filter(r => !r.error).length;
+        const failedDishes = data.failed_dishes || nutrientResults.filter(r => r.error).length;
+        console.log(`📊 Результат анализа: всего=${totalDishes}, успешно=${successfulDishes}, ошибки=${failedDishes}`);
+      }
+    } else {
+      // Ошибка HTTP
+      let errorDetails = `Статус: ${response.status} ${response.statusText}`;
+
+      // Пытаемся получить детали ошибки из ответа
+      try {
+        const errorData = await response.json();
+        if (errorData.error) {
+          errorDetails += `\nДетали: ${errorData.error}`;
+        }
+      } catch (e) {
+        // Если не JSON, пытаемся получить текст
+        try {
+          const errorText = await response.text();
+          if (errorText && errorText.length < 200) {
+            errorDetails += `\nОтвет: ${errorText}`;
+          }
+        } catch (textError) {
+          console.error('Не удалось прочитать ответ сервера:', textError);
+        }
+      }
+
+      console.error('HTTP ошибка:', response.status, response.statusText, 'URL:', response.url);
+
+      nutrientsResult.innerHTML = `
+        <div class="alert alert-danger" role="alert">
+          <h6 class="alert-heading">❌ Ошибка сервера</h6>
+          <p class="mb-0" style="white-space: pre-line;">${errorDetails}</p>
+        </div>
+      `;
+    }
 
   } catch (err) {
     console.error("Ошибка при анализе нутриентов:", err);
     nutrientsResult.innerHTML = `
       <div class="alert alert-danger" role="alert">
-        <h6 class="alert-heading">❌ Ошибка анализа нутриентов</h6>
-        <p class="mb-0">Не удалось проанализировать питательную ценность блюд. Попробуйте позже.</p>
+        <h6 class="alert-heading">❌ Ошибка соединения</h6>
+        <p class="mb-0">Не удалось подключиться к серверу анализа. Попробуйте позже.</p>
       </div>
     `;
-    nutrientsButton.textContent = "Определить нутриенты";
   } finally {
+    nutrientsButton.textContent = "Определить нутриенты";
     nutrientsButton.disabled = false;
   }
 }

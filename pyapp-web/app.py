@@ -810,7 +810,10 @@ def create_app() -> Flask:
     @app.post("/analyze_nutrients")
     @login_required
     def analyze_nutrients():  # type: ignore
-        """Анализирует питательную ценность блюда через chain-сервер."""
+        """
+        Анализирует питательную ценность блюд через chain-сервер.
+        Поддерживает как одно блюдо (для обратной совместимости), так и множественные блюда.
+        """
         if not current_user.is_confirmed:
             return jsonify({"error": "Подтвердите email"}), 403
 
@@ -818,14 +821,46 @@ def create_app() -> Flask:
         if not data:
             return jsonify({"error": "Нет данных"}), 400
 
-        dish = data.get("dish")
-        amount = data.get("amount", 100)
-        unit = data.get("unit", "грамм")
         upload_id = data.get("upload_id")
-        is_first_dish = data.get("is_first_dish", False)
 
-        if not dish:
-            return jsonify({"error": "Не указано блюдо"}), 400
+        # Поддерживаем два формата: старый (одно блюдо) и новый (множественные блюда)
+        dishes_list = []
+        is_single_dish_request = False  # Флаг для определения типа запроса
+
+        if "dishes" in data:
+            # Новый формат: множественные блюда
+            dishes_data = data["dishes"]
+            if not isinstance(dishes_data, list):
+                return jsonify({"error": "Поле 'dishes' должно быть списком"}), 400
+
+            for dish_item in dishes_data:
+                if not isinstance(dish_item, dict):
+                    return jsonify({"error": "Каждое блюдо должно быть объектом"}), 400
+
+                dish_name = dish_item.get("dish", "").strip()
+                if not dish_name:
+                    return jsonify({"error": "Не указано название блюда"}), 400
+
+                dishes_list.append({
+                    "dish": dish_name,
+                    "amount": dish_item.get("amount", 100),
+                    "unit": dish_item.get("unit", "gram")
+                })
+        else:
+            # Старый формат: одно блюдо (для обратной совместимости)
+            dish = data.get("dish")
+            amount = data.get("amount", 100)
+            unit = data.get("unit", "грамм")
+
+            if not dish:
+                return jsonify({"error": "Не указано блюдо"}), 400
+
+            dishes_list.append({
+                "dish": dish,
+                "amount": amount,
+                "unit": unit
+            })
+            is_single_dish_request = True
 
         # Если указан upload_id, проверяем права доступа
         upload_record = None
@@ -837,7 +872,7 @@ def create_app() -> Flask:
         # Настройки chain-сервера
         chain_config = config.get("chain_server", {})
         chain_url = chain_config.get("url", "http://localhost:8000")
-        timeout = chain_config.get("timeout", 30)
+        timeout = chain_config.get("timeout", 45)  # Увеличиваем таймаут для множественного анализа
 
         # Проверяем, работает ли chain-сервер
         try:
@@ -851,11 +886,11 @@ def create_app() -> Flask:
         except requests.RequestException:
             return jsonify({"error": "Chain-сервер недоступен"}), 503
 
-        # Отправляем запрос на анализ нутриентов
+        # Отправляем запрос на анализ нутриентов (одним запросом для всех блюд)
         try:
             response = requests.post(
-                f"{chain_url}/analyze-nutrients",
-                json={"dish": dish, "amount": amount, "unit": unit},
+                f"{chain_url}/analyze-multiple-nutrients",
+                json={"dishes": dishes_list},
                 timeout=timeout,
                 headers={"Content-Type": "application/json"}
             )
@@ -863,41 +898,56 @@ def create_app() -> Flask:
             if response.status_code == 200:
                 result = response.json()
 
-                                # Сохраняем результат в базу данных, если указан upload_id
+                # Сохраняем результат в базу данных, если указан upload_id
                 if upload_record:
-                    # Получаем существующие данные нутриентов
-                    existing_nutrients = []
-                    if not is_first_dish and upload_record.nutrients_json:
-                        try:
-                            existing_data = json.loads(upload_record.nutrients_json)
-                            if isinstance(existing_data, list):
-                                existing_nutrients = existing_data
-                        except (json.JSONDecodeError, TypeError):
-                            existing_nutrients = []
+                    # Очищаем старые данные нутриентов для новых результатов
+                    upload_record.nutrients_json = None
 
-                    # Добавляем новый результат с информацией о блюде
-                    result_with_dish = {
-                        "dish": dish,
-                        "amount": amount,
-                        "unit": unit,
-                        "nutrients": result,
-                        "analyzed_at": datetime.utcnow().isoformat()
-                    }
+                    if not result.get("error") and result.get("dishes"):
+                        # Формируем данные для сохранения
+                        nutrients_data = []
+                        for i, dish_result in enumerate(result["dishes"]):
+                            # Для простоты используем соответствие по индексу
+                            # Поскольку порядок результатов должен соответствовать порядку запроса
+                            if i < len(dishes_list):
+                                corresponding_dish = dishes_list[i]
+                            else:
+                                # Если результатов больше чем блюд в запросе, используем последнее блюдо
+                                corresponding_dish = dishes_list[-1] if dishes_list else None
 
-                    # Проверяем, есть ли уже результат для этого блюда
-                    updated = False
-                    for i, existing in enumerate(existing_nutrients):
-                        if existing.get("dish") == dish and existing.get("amount") == amount and existing.get("unit") == unit:
-                            existing_nutrients[i] = result_with_dish
-                            updated = True
-                            break
+                            nutrients_entry = {
+                                "dish": corresponding_dish["dish"] if corresponding_dish else "Unknown",
+                                "amount": corresponding_dish["amount"] if corresponding_dish else 100,
+                                "unit": corresponding_dish["unit"] if corresponding_dish else "gram",
+                                "nutrients": {
+                                    "dish_name": dish_result.get("dish_name", ""),
+                                    "calories": dish_result.get("calories", 0),
+                                    "protein": dish_result.get("protein", 0),
+                                    "fat": dish_result.get("fat", 0),
+                                    "carbohydrates": dish_result.get("carbohydrates", 0),
+                                    "fiber": dish_result.get("fiber", 0)
+                                },
+                                "analyzed_at": datetime.utcnow().isoformat()
+                            }
 
-                    if not updated:
-                        existing_nutrients.append(result_with_dish)
+                            # Если есть ошибка для этого блюда, добавляем её
+                            if "error" in dish_result:
+                                nutrients_entry["nutrients"]["error"] = dish_result["error"]
 
-                    upload_record.nutrients_json = json.dumps(existing_nutrients, indent=2, ensure_ascii=False)
-                    db.session.commit()
+                            nutrients_data.append(nutrients_entry)
 
+                        upload_record.nutrients_json = json.dumps(nutrients_data, indent=2, ensure_ascii=False)
+                        db.session.commit()
+
+                # Для обратной совместимости: если был запрос одного блюда, возвращаем только его результат
+                if is_single_dish_request:
+                    if result.get("dishes") and len(result["dishes"]) > 0:
+                        single_result = result["dishes"][0]
+                        return jsonify(single_result)
+                    else:
+                        return jsonify({"error": result.get("error", "Не удалось проанализировать блюдо")})
+
+                # Для множественных блюд возвращаем полный результат
                 return jsonify(result)
             else:
                 error_msg = f"Ошибка chain-сервера: {response.status_code}"

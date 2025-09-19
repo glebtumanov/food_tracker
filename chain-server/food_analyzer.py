@@ -248,12 +248,28 @@ class MultipleNutrientAnalysis(BaseModel):
     dishes: List[NutrientAnalysis] = Field(description="Список результатов анализа для каждого блюда")
 
 
+def _safe_pretty(obj: Any, max_len: int = 2000) -> str:
+    """Безопасно формирует строку для печати с ограничением длины."""
+    try:
+        if isinstance(obj, str):
+            s = obj
+        else:
+            s = json.dumps(obj, ensure_ascii=False, indent=2)
+    except Exception:
+        s = str(obj)
+    if len(s) > max_len:
+        return s[:max_len] + "\n...[truncated]..."
+    return s
+
+
 class EdamamFoodSearcher:
     """Анализатор питательных веществ через Edamam API и OpenAI."""
 
     def __init__(self, app_id: str, app_key: str, base_url: str, timeout: int = 30, max_results: int = 3,
                  model_name: str = "gpt-4o", temperature: float = 0.5, max_tokens: int = 800,
-                 request_timeout: int = 45):
+                 request_timeout: int = 45,
+                 debug_api_log: bool = False,
+                 debug_max_chars: int = 2000):
         """
         Инициализация анализатора.
 
@@ -273,6 +289,8 @@ class EdamamFoodSearcher:
         self.base_url = base_url
         self.timeout = timeout
         self.max_results = max_results
+        self.debug_api_log = debug_api_log
+        self.debug_max_chars = debug_max_chars
 
         # Инициализация OpenAI модели для анализа питательных веществ
         self.llm = ChatOpenAI(
@@ -446,8 +464,12 @@ class EdamamFoodSearcher:
         try:
             response = requests.get(self.base_url, params=params, timeout=self.timeout)
             response.raise_for_status()
-
             data = response.json()
+
+            if self.debug_api_log:
+                print("===== Edamam RAW response =====")
+                print(_safe_pretty(data, self.debug_max_chars))
+                print("===== /Edamam RAW response =====")
 
             # Ограничиваем количество результатов
             if "parsed" in data and len(data["parsed"]) > self.max_results:
@@ -504,6 +526,10 @@ class EdamamFoodSearcher:
 
             # Получаем ответ от LLM
             response = self.llm.invoke(messages)
+            if self.debug_api_log:
+                print("===== LLM RAW response (single) =====")
+                print(_safe_pretty(getattr(response, 'content', response), self.debug_max_chars))
+                print("===== /LLM RAW response (single) =====")
             nutrients = self.nutrient_parser.parse(response.content)
 
             return {
@@ -616,6 +642,10 @@ class EdamamFoodSearcher:
 
             # Получаем ответ от LLM
             response = self.llm.invoke(messages)
+            if self.debug_api_log:
+                print("===== LLM RAW response (multiple) =====")
+                print(_safe_pretty(getattr(response, 'content', response), self.debug_max_chars))
+                print("===== /LLM RAW response (multiple) =====")
             nutrients = self.multiple_nutrient_parser.parse(response.content)
 
             return {

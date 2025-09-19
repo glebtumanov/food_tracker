@@ -11,6 +11,8 @@
 ```bash
 cd chain-server
 export OPENAI_API_KEY='your-openai-api-key'
+export EDAMAM_APP_ID='your-edamam-app-id'
+export EDAMAM_APP_KEY='your-edamam-app-key'
 pip install -r requirements.txt
 python server.py
 ```
@@ -50,8 +52,6 @@ analyze_nutrients_model:
   timeout: 45
 
 edamam:
-  app_id: "your-edamam-app-id"
-  app_key: "your-edamam-app-key"
   base_url: "https://api.edamam.com/api/food-database/v2/parser"
   timeout: 30
   max_results: 10
@@ -61,6 +61,15 @@ logging:
   level: "INFO"
   max_size_mb: 50
   backup_count: 5
+```
+
+#### Переменные окружения
+
+Не храните `EDAMAM_APP_ID` и `EDAMAM_APP_KEY` в `config.yaml`. Задайте их через переменные окружения (как `OPENAI_API_KEY`):
+
+```bash
+export EDAMAM_APP_ID='your-edamam-app-id'
+export EDAMAM_APP_KEY='your-edamam-app-key'
 ```
 
 ### Web App (pyapp-web/config.yaml)
@@ -160,11 +169,8 @@ pip install -r requirements.txt
 
 # Настройте API ключи
 export OPENAI_API_KEY='your-openai-api-key'
-
-# Отредактируйте config.yaml и добавьте Edamam API ключи:
-# edamam:
-#   app_id: "your-edamam-app-id"
-#   app_key: "your-edamam-app-key"
+export EDAMAM_APP_ID='your-edamam-app-id'
+export EDAMAM_APP_KEY='your-edamam-app-key'
 ```
 
 ### Запуск в режиме разработки

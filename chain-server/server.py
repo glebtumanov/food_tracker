@@ -127,21 +127,33 @@ def create_nutrients_analyzer_with_config(config: Dict[str, Any]) -> EdamamFoodS
     edamam_config = config.get("edamam", {})
     nutrients_config = config.get("analyze_nutrients_model", {})
 
+    app_id = os.getenv("EDAMAM_APP_ID")
+    app_key = os.getenv("EDAMAM_APP_KEY")
+    if not app_id or not app_key:
+        raise ValueError("EDAMAM_APP_ID и/или EDAMAM_APP_KEY не найдены в переменных окружения")
+
     return EdamamFoodSearcher(
-        app_id=edamam_config.get("app_id"),
-        app_key=edamam_config.get("app_key"),
+        app_id=app_id,
+        app_key=app_key,
         base_url=edamam_config.get("base_url"),
         timeout=edamam_config.get("timeout", 30),
         max_results=edamam_config.get("max_results", 10),
         model_name=nutrients_config.get("model", "gpt-4o"),
         temperature=nutrients_config.get("temperature", 0.5),
         max_tokens=nutrients_config.get("max_tokens", 800),
-        request_timeout=nutrients_config.get("timeout", 45)
+        request_timeout=nutrients_config.get("timeout", 45),
+        debug_api_log=DEBUG_API_LOG,
+        debug_max_chars=DEBUG_MAX_CHARS
     )
 
 
 # Загружаем конфигурацию
 config = load_config()
+
+# Debug настройки печати сырых ответов API
+DEBUG_SETTINGS = config.get("debug", {})
+DEBUG_API_LOG = bool(DEBUG_SETTINGS.get("api_log", False))
+DEBUG_MAX_CHARS = int(DEBUG_SETTINGS.get("max_print_chars", 2000))
 
 # Настраиваем логирование
 logging_config = config.get("logging", {})
@@ -152,6 +164,24 @@ analyzer: FoodImageAnalyzer | None = None
 food_searcher: EdamamFoodSearcher | None = None
 
 
+def _require_env_vars(var_names: list[str]) -> None:
+    """Проверяет наличие обязательных переменных окружения.
+
+    При отсутствии печатает сообщение в консоль, логирует ошибку и завершает процесс.
+    """
+    missing = [name for name in var_names if not os.getenv(name)]
+    if missing:
+        msg = "[STARTUP] Не заданы обязательные переменные окружения: " + ", ".join(missing)
+        api_logger.error(msg)
+        print("❌ " + msg)
+        raise SystemExit(1)
+
+
+def validate_environment() -> None:
+    """Валидирует все необходимые переменные окружения для запуска сервера."""
+    _require_env_vars(["OPENAI_API_KEY", "EDAMAM_APP_ID", "EDAMAM_APP_KEY"])
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Управление жизненным циклом приложения."""
@@ -160,9 +190,8 @@ async def lifespan(app: FastAPI):
     # Startup
     api_logger.info("[STARTUP] Запуск chain-server...")
 
-    if not os.getenv("OPENAI_API_KEY"):
-        api_logger.error("[STARTUP] OPENAI_API_KEY не найден в переменных окружения")
-        raise ValueError("OPENAI_API_KEY не найден в переменных окружения")
+    # Проверяем необходимые переменные окружения до инициализации сервисов
+    validate_environment()
 
     try:
         analyzer = create_food_analyzer_with_config(config)

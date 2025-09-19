@@ -304,6 +304,17 @@ def allowed_file(filename: str) -> bool:
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
 
 
+def _safe_pretty(obj: Any, max_len: int = 2000) -> str:
+    try:
+        if isinstance(obj, str):
+            s = obj
+        else:
+            s = json.dumps(obj, ensure_ascii=False, indent=2)
+    except Exception:
+        s = str(obj)
+    return s if len(s) <= max_len else s[:max_len] + "\n...[truncated]..."
+
+
 def analyze_image_with_chain_server(image_path: str) -> Dict[str, Any]:
     """Анализирует изображение с помощью chain-сервера."""
     chain_config = config.get("chain_server", {})
@@ -342,6 +353,12 @@ def analyze_image_with_chain_server(image_path: str) -> Dict[str, Any]:
 
     if response.status_code == 200:
         result = response.json()
+        # Отладочная печать ответа chain-server, если включено
+        debug_conf = config.get("debug", {})
+        if debug_conf.get("api_log", False):
+            print("===== chain-server /analyze RAW response =====")
+            print(_safe_pretty(result, int(debug_conf.get("max_print_chars", 2000))))
+            print("===== /chain-server /analyze RAW response =====")
         print(json.dumps(result, indent=2, ensure_ascii=False))
         # Убираем поле error если оно None (успешный анализ)
         if result.get("error") is None:
@@ -746,6 +763,11 @@ def create_app() -> Flask:
 
         # Анализируем изображение через chain-сервер
         analysis_result = analyze_image_with_chain_server(image_path)
+        debug_conf = config.get("debug", {})
+        if debug_conf.get("api_log", False):
+            print("===== chain-server /analyze processed result =====")
+            print(_safe_pretty(analysis_result, int(debug_conf.get("max_print_chars", 2000))))
+            print("===== /chain-server /analyze processed result =====")
 
         # Проверяем результат анализа
         error_msg = analysis_result.get("error")
@@ -897,6 +919,11 @@ def create_app() -> Flask:
 
             if response.status_code == 200:
                 result = response.json()
+                debug_conf = config.get("debug", {})
+                if debug_conf.get("api_log", False):
+                    print("===== chain-server /analyze-multiple-nutrients RAW response =====")
+                    print(_safe_pretty(result, int(debug_conf.get("max_print_chars", 2000))))
+                    print("===== /chain-server /analyze-multiple-nutrients RAW response =====")
 
                 # Сохраняем результат в базу данных, если указан upload_id
                 if upload_record:
@@ -948,6 +975,10 @@ def create_app() -> Flask:
                         return jsonify({"error": result.get("error", "Не удалось проанализировать блюдо")})
 
                 # Для множественных блюд возвращаем полный результат
+                if debug_conf.get("api_log", False):
+                    print("===== chain-server /analyze-multiple-nutrients processed result =====")
+                    print(_safe_pretty(result, int(debug_conf.get("max_print_chars", 2000))))
+                    print("===== /chain-server /analyze-multiple-nutrients processed result =====")
                 return jsonify(result)
             else:
                 error_msg = f"Ошибка chain-сервера: {response.status_code}"

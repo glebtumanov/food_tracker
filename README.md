@@ -17,7 +17,7 @@ pip install -r requirements.txt
 python server.py
 ```
 
-Сервер будет доступен на `http://localhost:8000`
+Сервер доступен на `http://localhost:8000`, документация Swagger — на `http://localhost:8000/api/v1/docs`.
 
 ### 2. Запуск веб-приложения
 
@@ -193,22 +193,38 @@ python app.py
 
 ### Chain Server (порт 8000)
 
-- `POST /analyze` - Анализ изображения (определение блюд)
-- `POST /analyze-nutrients` - Анализ питательной ценности блюд
-- `GET /health` - Проверка состояния серверов и API
-- `GET /docs` - Swagger документация
-- `GET /langserve` - LangServe playground
+- `POST /api/v1/analyze` — Анализ изображения (определение блюд)
+- `POST /api/v1/analyze-nutrients` — Анализ питательной ценности одного блюда
+- `POST /api/v1/analyze-multiple-nutrients` — Анализ питательной ценности для нескольких блюд
+- `POST /api/v1/analyze-full` — Комбинированный анализ: блюда + нутриенты за один запрос
+- `GET /api/v1/health` — Проверка состояния серверов и API
+- `GET /api/v1/docs` — Swagger документация
+
+Приватные служебные маршруты и playground скрыты из документации и не считаются публичными.
+
+#### Корреляционные заголовки
+- `X-Request-ID` — если не передан клиентом, сервер сгенерирует UUID и вернёт его в ответе (заголовок `X-Request-ID`).
+- `Idempotency-Key` — значение из заголовка сохраняется в `request.state.idempotency_key` (подготовка к идемпотентным операциям).
 
 ### Web App (порт 5001)
 
-- `GET /` - Главная страница
-- `POST /upload` - Загрузка изображения
-- `POST /analyze_image` - Проксирование к chain-server /analyze
-- `POST /analyze_nutrients` - Проксирование к chain-server /analyze-nutrients
-- `GET /history` - История загрузок и анализов
-- `POST /register` - Регистрация
-- `POST /login` - Авторизация
-- `GET /get_analysis/<filename>` - Получение сохраненного анализа
+- `GET /` — Главная (требуется вход)
+- `POST /upload` — Загрузка изображения (требуется вход)
+- `POST /analyze_image` — Анализ изображения через Chain Server (требуется вход)
+- `POST /analyze_nutrients` — Анализ нутриентов через Chain Server (требуется вход)
+- `POST /save_analysis` — Сохранение результата анализа (требуется вход)
+- `GET /get_analysis/<filename>` — Получение сохранённого анализа (требуется вход)
+- `GET /get_nutrients/<upload_id>` — Получение сохранённых нутриентов (требуется вход)
+- `GET /uploads/<path:filename>` — Получение загруженного изображения
+- `GET /history` — История загрузок (требуется вход)
+- `GET /nutrition_stats` — Статистика по дням (требуется вход)
+- `GET /use/<upload_id>` — Выбрать загрузку для просмотра (требуется вход)
+- `GET /delete/<upload_id>` — Удаление загрузки (требуется вход)
+- `GET/POST /register` — Регистрация
+- `GET/POST /login` — Вход
+- `GET /logout` — Выход
+- `GET/POST /forgot` — Запрос на сброс пароля
+- `GET/POST /reset/<token>` — Сброс пароля по токену
 
 ## Планы развития
 

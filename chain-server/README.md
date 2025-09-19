@@ -98,15 +98,22 @@ pip install -r requirements.txt
 python server.py
 ```
 
-Сервер будет доступен по адресу: `http://localhost:8000`
+Сервер будет доступен по адресу: `http://localhost:8000`, Swagger — `http://localhost:8000/api/v1/docs`.
 
-### API endpoints
+### Публичные API endpoints (порт 8000)
 
-- `POST /analyze` - Анализ одного изображения
-- `POST /analyze_batch` - Пакетный анализ
-- `GET /health` - Проверка состояния сервера
-- `GET /docs` - Swagger документация
-- `/langserve` - LangServe playground
+- `POST /api/v1/analyze` — Анализ одного изображения (определение блюд)
+- `POST /api/v1/analyze-nutrients` — Анализ нутриентов одного блюда
+- `POST /api/v1/analyze-multiple-nutrients` — Анализ нутриентов для нескольких блюд
+- `POST /api/v1/analyze-full` — Комбинированный анализ: блюда + нутриенты
+- `GET /api/v1/health` — Проверка состояния сервера
+- `GET /api/v1/docs` — Swagger документация
+
+Внутренние и playground-маршруты скрыты и не считаются публичными.
+
+#### Корреляционные заголовки и идемпотентность
+- `X-Request-ID`: если не передан клиентом, сервер сгенерирует UUID и вернёт его в ответе в одноимённом заголовке. Идентификатор используется в логах (`rid=...`).
+- `Idempotency-Key`: если передан клиентом, значение помещается в `request.state.idempotency_key` и может быть использовано обработчиками для идемпотентной логики.
 
 ## Конфигурация
 

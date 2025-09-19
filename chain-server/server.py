@@ -25,6 +25,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from langserve import add_routes
 from langchain_core.runnables import RunnableLambda
 from pydantic import BaseModel
+import uuid
 
 from food_analyzer import (FoodImageAnalyzer, EdamamFoodSearcher, FoodSearchRequest, NutrientAnalysis,
                           MultipleDishesRequest, MultipleDishItem, MultipleNutrientAnalysis)
@@ -255,6 +256,22 @@ app.add_middleware(
 )
 
 
+# Middleware для установки X-Request-ID и Idempotency-Key
+@app.middleware("http")
+async def request_context_middleware(request: Request, call_next):
+    request_id = request.headers.get("x-request-id") or str(uuid.uuid4())
+    idempotency_key = request.headers.get("idempotency-key")
+
+    # Прокидываем в request.state
+    request.state.request_id = request_id
+    request.state.idempotency_key = idempotency_key
+
+    response = await call_next(request)
+    # Пробрасываем X-Request-ID в ответ
+    response.headers["X-Request-ID"] = request_id
+    return response
+
+
 # Middleware для логирования запросов
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
@@ -268,8 +285,11 @@ async def log_requests(request: Request, call_next):
     headers = dict(request.headers)
     user_agent = headers.get("user-agent", "unknown")
 
+    # Идентификаторы запроса
+    request_id = getattr(request.state, "request_id", headers.get("x-request-id", "unknown"))
+
     # Логируем начало запроса
-    api_logger.info(f"[REQUEST] {method} {url} from {client_ip} | UA: {user_agent}")
+    api_logger.info(f"[REQUEST] rid={request_id} | {method} {url} from {client_ip} | UA: {user_agent}")
 
     # Обрабатываем запрос
     try:
@@ -280,7 +300,7 @@ async def log_requests(request: Request, call_next):
 
         # Логируем завершение запроса
         api_logger.info(
-            f"[RESPONSE] {method} {url} | Status: {response.status_code} | "
+            f"[RESPONSE] rid={request_id} | {method} {url} | Status: {response.status_code} | "
             f"Time: {process_time:.3f}s | IP: {client_ip}"
         )
 
@@ -289,7 +309,7 @@ async def log_requests(request: Request, call_next):
     except Exception as e:
         process_time = time.time() - start_time
         api_logger.error(
-            f"[ERROR] {method} {url} | Error: {str(e)} | "
+            f"[ERROR] rid={request_id} | {method} {url} | Error: {str(e)} | "
             f"Time: {process_time:.3f}s | IP: {client_ip}"
         )
         raise

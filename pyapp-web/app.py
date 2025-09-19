@@ -320,8 +320,8 @@ def analyze_image_with_chain_server(image_path: str) -> Dict[str, Any]:
     chain_config = config.get("chain_server", {})
 
     chain_url = chain_config.get("url", "http://localhost:8000")
-    analyze_endpoint = chain_config.get("analyze_endpoint", "/analyze")
-    analyze_full_endpoint = chain_config.get("analyze_full_endpoint", "/analyze-full")
+    analyze_endpoint = chain_config.get("analyze_endpoint", "/api/v1/analyze")
+    analyze_full_endpoint = chain_config.get("analyze_full_endpoint", "/api/v1/analyze-full")
     timeout = chain_config.get("timeout", 30)
 
     # Выбор endpoint'а зависит от флага single_request_mode
@@ -763,7 +763,7 @@ def create_app() -> Flask:
         chain_config = config.get("chain_server", {})
         chain_url = chain_config.get("url", "http://localhost:8000")
 
-        health_response = requests.get(f"{chain_url}/health", timeout=5)
+        health_response = requests.get(f"{chain_url}/api/v1/health", timeout=5)
         if health_response.status_code != 200:
             return jsonify({"error": "Chain-сервер недоступен"}), 503
 
@@ -926,7 +926,7 @@ def create_app() -> Flask:
 
         # Проверяем, работает ли chain-сервер
         try:
-            health_response = requests.get(f"{chain_url}/health", timeout=5)
+            health_response = requests.get(f"{chain_url}/api/v1/health", timeout=5)
             if health_response.status_code != 200:
                 return jsonify({"error": "Chain-сервер недоступен"}), 503
 
@@ -939,7 +939,7 @@ def create_app() -> Flask:
         # Отправляем запрос на анализ нутриентов (одним запросом для всех блюд)
         try:
             response = requests.post(
-                f"{chain_url}/analyze-multiple-nutrients",
+                f"{chain_url}/api/v1/analyze-multiple-nutrients",
                 json={"dishes": dishes_list},
                 timeout=timeout,
                 headers={"Content-Type": "application/json"}

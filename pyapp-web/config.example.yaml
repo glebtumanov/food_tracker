@@ -36,8 +36,8 @@ mail:
 # Настройки интеграции с chain-server
 chain_server:
   url: "http://localhost:8000"     # URL chain-сервера
-  analyze_endpoint: "/analyze"     # Endpoint для анализа изображения
-  analyze_full_endpoint: "/analyze-full"  # Комбинированный endpoint (изображение→блюда→нутриенты)
+  analyze_endpoint: "/api/v1/analyze"     # Endpoint для анализа изображения
+  analyze_full_endpoint: "/api/v1/analyze-full"  # Комбинированный endpoint (изображение→блюда→нутриенты)
   timeout: 30                      # Таймаут запроса в секундах
 
 # Функциональные флаги

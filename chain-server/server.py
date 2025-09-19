@@ -20,6 +20,7 @@ from datetime import datetime
 from logging.handlers import RotatingFileHandler
 
 from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.openapi.utils import get_openapi
 from fastapi.middleware.cors import CORSMiddleware
 from langserve import add_routes
 from langchain_core.runnables import RunnableLambda
@@ -239,6 +240,8 @@ app = FastAPI(
     title=server_config.get("title", "Food Image Analyzer API"),
     description=server_config.get("description", "API для анализа изображений еды с помощью LangChain и OpenAI"),
     version=server_config.get("version", "1.0.0"),
+    docs_url="/api/v1/docs",
+    openapi_url="/api/v1/openapi.json",
     lifespan=lifespan,
 )
 
@@ -313,7 +316,7 @@ def _save_base64_image(image_base64: str, filename: str) -> str:
     return str(temp_path)
 
 
-@app.post("/analyze", response_model=ImageAnalysisResponse)
+@app.post("/api/v1/analyze", response_model=ImageAnalysisResponse, tags=["analysis"])
 async def analyze_image(request: ImageAnalysisRequest) -> ImageAnalysisResponse:
     """
     Анализирует изображение еды.
@@ -374,7 +377,7 @@ async def analyze_image(request: ImageAnalysisRequest) -> ImageAnalysisResponse:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/analyze-nutrients")
+@app.post("/api/v1/analyze-nutrients", tags=["nutrients"])
 async def analyze_nutrients(request: FoodSearchRequest) -> Dict[str, Any]:
     """
     Анализ питательных веществ блюда через Edamam Food Database API.
@@ -408,7 +411,7 @@ async def analyze_nutrients(request: FoodSearchRequest) -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/analyze-full")
+@app.post("/api/v1/analyze-full", tags=["analysis"])
 async def analyze_full(request: ImageAnalysisRequest) -> Dict[str, Any]:
     """
     Комбинированный эндпоинт: принимает изображение, определяет блюда и
@@ -501,7 +504,7 @@ async def analyze_full(request: ImageAnalysisRequest) -> Dict[str, Any]:
         api_logger.error(f"[FULL] Неожиданная ошибка: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/analyze-multiple-nutrients")
+@app.post("/api/v1/analyze-multiple-nutrients", tags=["nutrients"])
 async def analyze_multiple_nutrients(request: MultipleDishesRequest) -> Dict[str, Any]:
     """
     Анализ питательных веществ множественных блюд через Edamam Food Database API.
@@ -545,7 +548,7 @@ async def analyze_multiple_nutrients(request: MultipleDishesRequest) -> Dict[str
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/health")
+@app.get("/api/v1/health", tags=["health"])
 async def health_check():
     """Проверка состояния сервера."""
     status = {
@@ -646,7 +649,7 @@ add_routes(
 add_routes(
     app,
     create_nutrient_analysis_chain(),
-    path="/analyze-nutrients",
+    path="/api/v1/analyze-nutrients",
     playground_type=LANGSERVE_SETTINGS["playground_type"]
 )
 
@@ -654,9 +657,38 @@ add_routes(
 add_routes(
     app,
     create_multiple_nutrient_analysis_chain(),
-    path="/analyze-multiple-nutrients",
+    path="/api/v1/analyze-multiple-nutrients",
     playground_type=LANGSERVE_SETTINGS["playground_type"]
 )
+
+
+# Кастомная генерация OpenAPI: скрываем LangServe эндпоинты из документации
+def custom_openapi():
+    schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        routes=app.routes,
+    )
+
+    paths = schema.get("paths", {})
+
+    def _is_langserve_path(path: str) -> bool:
+        if path.startswith("/langserve"):
+            return True
+        if path.startswith("/api/v1/analyze-nutrients/"):
+            return True
+        if path.startswith("/api/v1/analyze-multiple-nutrients/"):
+            return True
+        return False
+
+    filtered_paths = {p: v for p, v in paths.items() if not _is_langserve_path(p)}
+    schema["paths"] = filtered_paths
+    app.openapi_schema = schema
+    return app.openapi_schema
+
+
+app.openapi = custom_openapi
 
 
 if __name__ == "__main__":

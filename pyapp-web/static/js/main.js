@@ -14,6 +14,7 @@ const uploadUrl = "/upload";
 const saveAnalysisUrl = "/save_analysis";
 const analyzeImageUrl = "/analyze_image";
 const analyzeNutrientsUrl = "/analyze_nutrients";
+const SINGLE_REQUEST_MODE = Boolean(window.__FEATURES__ && window.__FEATURES__.single_request_mode);
 
 // Текущие данные загрузки
 let currentUploadId = null;
@@ -65,8 +66,8 @@ function updatePreview(url, uploadId = null) {
   if (nutrientsButton) {
     nutrientsButton.style.display = "inline-block";
     nutrientsButton.style.visibility = "visible";
-    nutrientsButton.disabled = true;
-    nutrientsButton.textContent = "Сначала проанализируйте изображение";
+    nutrientsButton.disabled = SINGLE_REQUEST_MODE ? false : true;
+    nutrientsButton.textContent = SINGLE_REQUEST_MODE ? "Определить нутриенты" : "Сначала проанализируйте изображение";
   }
 
   // Скрываем результаты предыдущего анализа
@@ -84,8 +85,8 @@ function updatePreview(url, uploadId = null) {
   // Сбрасываем состояние кнопки нутриентов
   if (nutrientsButton) {
     nutrientsButton.style.display = "inline-block";
-    nutrientsButton.disabled = true;
-    nutrientsButton.textContent = "Сначала проанализируйте изображение";
+    nutrientsButton.disabled = SINGLE_REQUEST_MODE ? false : true;
+    nutrientsButton.textContent = SINGLE_REQUEST_MODE ? "Определить нутриенты" : "Сначала проанализируйте изображение";
   }
 
   // Очищаем данные анализа
@@ -362,11 +363,16 @@ function renderAnalysisResult(analysis) {
 }
 
 async function analyzeImage() {
-  if (!analyzeButton || !analysisResult || !currentUploadId) return;
+  if (!analysisResult || !currentUploadId) return;
+
+  // Определяем активную кнопку-триггер по режиму
+  const triggerBtn = SINGLE_REQUEST_MODE ? nutrientsButton : analyzeButton;
 
   // Показываем состояние загрузки
-  analyzeButton.textContent = "Анализируем...";
-  analyzeButton.disabled = true;
+  if (triggerBtn) {
+    triggerBtn.textContent = "Анализируем...";
+    triggerBtn.disabled = true;
+  }
 
   // Показываем индикатор загрузки
   analysisResult.innerHTML = `
@@ -396,7 +402,22 @@ async function analyzeImage() {
       // Успешный анализ
       currentAnalysisData = data.analysis;
       renderAnalysisResult(data.analysis);
-      analyzeButton.textContent = "Определить еду на картинке";
+      if (triggerBtn) {
+        triggerBtn.textContent = SINGLE_REQUEST_MODE ? "Определить нутриенты" : "Определить еду на картинке";
+      }
+
+      // В однозапросном режиме сервер уже возвращает нутриенты
+      if (SINGLE_REQUEST_MODE && data.nutrients) {
+        const results = (data.nutrients.dishes || []).map((nutr, i) => ({
+          dish: {
+            name: (currentAnalysisData.dishes[i]?.name_en) || (currentAnalysisData.dishes[i]?.name) || `Блюдо ${i+1}`,
+            amount: currentAnalysisData.dishes[i]?.amount,
+            unit_type: currentAnalysisData.dishes[i]?.unit_type,
+          },
+          nutrients: nutr,
+        }));
+        renderNutrientResults(results);
+      }
 
                   // Активируем кнопку нутриентов если есть блюда
       if (nutrientsButton) {
@@ -417,7 +438,9 @@ async function analyzeImage() {
           <p class="mb-0">${errorMsg}</p>
         </div>
       `;
-      analyzeButton.textContent = "Определить еду на картинке";
+      if (triggerBtn) {
+        triggerBtn.textContent = SINGLE_REQUEST_MODE ? "Определить нутриенты" : "Определить еду на картинке";
+      }
     }
   } catch (err) {
     console.error("Ошибка при анализе:", err);
@@ -427,9 +450,13 @@ async function analyzeImage() {
         <p class="mb-0">Не удалось подключиться к серверу анализа. Попробуйте позже.</p>
       </div>
     `;
-          analyzeButton.textContent = "Определить еду на картинке";
+          if (triggerBtn) {
+            triggerBtn.textContent = SINGLE_REQUEST_MODE ? "Определить нутриенты" : "Определить еду на картинке";
+          }
   } finally {
-    analyzeButton.disabled = false;
+    if (triggerBtn) {
+      triggerBtn.disabled = false;
+    }
   }
 }
 
@@ -760,13 +787,13 @@ function renderNutrientResults(results) {
 }
 
 // Обработчик клика на кнопку анализа
-if (analyzeButton) {
+if (analyzeButton && !SINGLE_REQUEST_MODE) {
   analyzeButton.addEventListener("click", analyzeImage);
 }
 
 // Обработчик клика на кнопку нутриентов
 if (nutrientsButton) {
-  nutrientsButton.addEventListener("click", analyzeNutrients);
+  nutrientsButton.addEventListener("click", SINGLE_REQUEST_MODE ? analyzeImage : analyzeNutrients);
 }
 
 // -----------------------------------------------------------------------------

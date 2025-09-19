@@ -408,6 +408,99 @@ async def analyze_nutrients(request: FoodSearchRequest) -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/analyze-full")
+async def analyze_full(request: ImageAnalysisRequest) -> Dict[str, Any]:
+    """
+    Комбинированный эндпоинт: принимает изображение, определяет блюда и
+    рассчитывает нутриенты для всех найденных блюд одним запросом.
+
+    Возвращает объект вида:
+      {
+        "analysis": ImageAnalysisResponse,
+        "nutrients": Dict[str, Any]
+      }
+    """
+    api_logger.info("[FULL] Получен запрос на полный анализ изображения")
+
+    if analyzer is None or food_searcher is None:
+        api_logger.error("[FULL] Анализатор(ы) не инициализированы")
+        raise HTTPException(status_code=500, detail="Анализаторы не инициализированы")
+
+    # Вспомогательная конвертация единиц в формат, ожидаемый нутриент‑анализом
+    def _unit_ru_to_en(unit_ru: str) -> str:
+        mapping = {
+            "штук": "pieces",
+            "кусок": "piece",
+            "ломтик": "slice",
+            "чашка": "cup",
+            "грамм": "gram",
+        }
+        return mapping.get(unit_ru.strip().lower(), "gram")
+
+    try:
+        # 1) Получаем путь к изображению
+        if request.image_path:
+            image_path = request.image_path
+            api_logger.info(f"[FULL] Использую локальный файл: {image_path}")
+        elif request.image_base64:
+            if not request.filename:
+                api_logger.error("[FULL] Не указан filename для base64 изображения")
+                raise HTTPException(status_code=400, detail="Для base64 изображения нужен filename")
+            image_path = _save_base64_image(request.image_base64, request.filename)
+            api_logger.info(f"[FULL] Сохранено base64 изображение: {image_path}")
+        else:
+            api_logger.error("[FULL] Не указан путь к изображению или base64 данные")
+            raise HTTPException(status_code=400, detail="Укажите image_path или image_base64")
+
+        # 2) Анализ изображения → блюда
+        api_logger.info(f"[FULL] Запускаю анализ изображения: {image_path}")
+        analysis = analyzer.analyze_image(image_path)
+
+        if analysis.get("error"):
+            api_logger.error(f"[FULL] Ошибка анализа изображения: {analysis['error']}")
+            # Удаляем временный файл если создавали
+            if request.image_base64:
+                try:
+                    os.remove(image_path)
+                except Exception:
+                    pass
+            return {"analysis": analysis, "nutrients": {"error": analysis.get("error")}}
+
+        dishes = analysis.get("dishes", []) or []
+
+        # 3) Готовим запрос для множественного анализа нутриентов
+        items: list[MultipleDishItem] = []
+        for dish in dishes:
+            name_en = (dish.get("name_en") or dish.get("name") or "").strip()
+            amount = dish.get("amount") or 100
+            unit_ru = dish.get("unit_type") or "грамм"
+            unit_en = _unit_ru_to_en(unit_ru)
+            if name_en:
+                items.append(MultipleDishItem(dish=name_en, amount=float(amount), unit=unit_en))
+
+        nutrients: Dict[str, Any]
+        if items:
+            api_logger.info(f"[FULL] Анализирую нутриенты для {len(items)} блюд")
+            nutrients = food_searcher.analyze_multiple_dishes_nutrients(items)
+        else:
+            nutrients = {"dishes": [], "total_dishes": 0, "successful_dishes": 0, "failed_dishes": 0}
+
+        # 4) Убираем временный файл если создавали
+        if request.image_base64:
+            try:
+                os.remove(image_path)
+                api_logger.debug(f"[FULL] Удален временный файл: {image_path}")
+            except Exception as cleanup_error:
+                api_logger.warning(f"[FULL] Не удалось удалить временный файл {image_path}: {cleanup_error}")
+
+        return {"analysis": analysis, "nutrients": nutrients}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        api_logger.error(f"[FULL] Неожиданная ошибка: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/analyze-multiple-nutrients")
 async def analyze_multiple_nutrients(request: MultipleDishesRequest) -> Dict[str, Any]:
     """

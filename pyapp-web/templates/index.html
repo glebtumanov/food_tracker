@@ -79,12 +79,18 @@
 
             <!-- Блок кнопок -->
             <div id="buttonContainer" class="text-center mb-3" style="display: none;">
-              <button id="analyzeButton" class="btn btn-primary me-2">
-                Определить еду на картинке
-              </button>
-              <button id="nutrientsButton" class="btn btn-success">
-                Определить нутриенты
-              </button>
+              {% if features and features.single_request_mode %}
+                <button id="nutrientsButton" class="btn btn-success">
+                  Определить нутриенты
+                </button>
+              {% else %}
+                <button id="analyzeButton" class="btn btn-primary me-2">
+                  Определить еду на картинке
+                </button>
+                <button id="nutrientsButton" class="btn btn-success">
+                  Определить нутриенты
+                </button>
+              {% endif %}
             </div>
 
             <!-- Результаты анализа -->
@@ -102,6 +108,7 @@
     <script>
       /* передаём ссылку на изображение, если пришла из /use/<id> */
       window.PRELOAD_URL = "{{ preload_url or '' }}";
+      window.__FEATURES__ = {{ (features or {}) | tojson | safe }};
     </script>
     <script src="{{ url_for('static', filename='js/main.js') }}"></script>
   </body>

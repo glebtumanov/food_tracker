@@ -321,9 +321,13 @@ def analyze_image_with_chain_server(image_path: str) -> Dict[str, Any]:
 
     chain_url = chain_config.get("url", "http://localhost:8000")
     analyze_endpoint = chain_config.get("analyze_endpoint", "/analyze")
+    analyze_full_endpoint = chain_config.get("analyze_full_endpoint", "/analyze-full")
     timeout = chain_config.get("timeout", 30)
 
-    full_url = f"{chain_url}{analyze_endpoint}"
+    # Выбор endpoint'а зависит от флага single_request_mode
+    features = config.get("features", {})
+    single_request_mode = bool(features.get("single_request_mode", False))
+    full_url = f"{chain_url}{(analyze_full_endpoint if single_request_mode else analyze_endpoint)}"
 
     # Проверяем, существует ли файл
     if not os.path.exists(image_path):
@@ -360,10 +364,15 @@ def analyze_image_with_chain_server(image_path: str) -> Dict[str, Any]:
             print(_safe_pretty(result, int(debug_conf.get("max_print_chars", 2000))))
             print("===== /chain-server /analyze RAW response =====")
         print(json.dumps(result, indent=2, ensure_ascii=False))
-        # Убираем поле error если оно None (успешный анализ)
-        if result.get("error") is None:
-            result.pop("error", None)
-        return result
+
+        # Если включен single_request_mode, сервер возвращает {analysis, nutrients}
+        if single_request_mode:
+            return result
+        else:
+            # Убираем поле error если оно None (успешный анализ)
+            if result.get("error") is None:
+                result.pop("error", None)
+            return result
     else:
         error_msg = f"Ошибка chain-сервера: {response.status_code}"
         if response.headers.get("content-type") == "application/json":
@@ -610,7 +619,8 @@ def create_app() -> Flask:
         """Главная страница с опциональным предпросмотром ранее загруженного изображения."""
         # Приоритет: параметр строки запроса → сохранённый в сессии URL
         preload_url = request.args.get("image") or session.get("last_image", "")
-        return render_template("index.html", preload_url=preload_url)
+        features = config.get("features", {})
+        return render_template("index.html", preload_url=preload_url, features=features)
 
     @app.post("/upload")
     @login_required
@@ -761,7 +771,7 @@ def create_app() -> Flask:
         if not health_data.get("image_analyzer_ready"):
             return jsonify({"error": "Анализатор не готов"}), 503
 
-        # Анализируем изображение через chain-сервер
+        # Анализируем изображение через chain-сервер (возможен полный анализ)
         analysis_result = analyze_image_with_chain_server(image_path)
         debug_conf = config.get("debug", {})
         if debug_conf.get("api_log", False):
@@ -777,9 +787,16 @@ def create_app() -> Flask:
                 "error": error_msg
             }), 500
 
+        # Режимы работы
+        features = config.get("features", {})
+        single_request_mode = bool(features.get("single_request_mode", False))
+
+        # В режиме single_request_mode API возвращает {analysis, nutrients}
+        analysis_payload = analysis_result.get("analysis") if single_request_mode else analysis_result
+
         # Формируем текст ингредиентов в markdown формате
-        dishes = analysis_result.get("dishes", [])
-        confidence = analysis_result.get("confidence", 0)
+        dishes = analysis_payload.get("dishes", [])
+        confidence = analysis_payload.get("confidence", 0)
 
         ingredients_text = f"**Результат анализа изображения:**\n\n"
         ingredients_text += f"**Уверенность:** {confidence:.1%}\n\n"
@@ -818,16 +835,24 @@ def create_app() -> Flask:
 
         # Сохраняем в базу данных
         upload_record.ingredients_md = ingredients_text
-        upload_record.ingredients_json = json.dumps(analysis_result, indent=2, ensure_ascii=False)
+        upload_record.ingredients_json = json.dumps(analysis_payload, indent=2, ensure_ascii=False)
         # При обновлении ingredients_json очищаем nutrients_json
         upload_record.nutrients_json = None
         db.session.commit()
 
-        return jsonify({
-            "success": True,
-            "analysis": analysis_result,
-            "formatted_text": ingredients_text
-        })
+        if single_request_mode:
+            return jsonify({
+                "success": True,
+                "analysis": analysis_payload,
+                "nutrients": analysis_result.get("nutrients", {}),
+                "formatted_text": ingredients_text
+            })
+        else:
+            return jsonify({
+                "success": True,
+                "analysis": analysis_payload,
+                "formatted_text": ingredients_text
+            })
 
     @app.post("/analyze_nutrients")
     @login_required
@@ -895,6 +920,9 @@ def create_app() -> Flask:
         chain_config = config.get("chain_server", {})
         chain_url = chain_config.get("url", "http://localhost:8000")
         timeout = chain_config.get("timeout", 45)  # Увеличиваем таймаут для множественного анализа
+
+        # Если включен single_request_mode, этот маршрут может вызываться только для повторного расчёта,
+        # но оставляем поведение прежним.
 
         # Проверяем, работает ли chain-сервер
         try:

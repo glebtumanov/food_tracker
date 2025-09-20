@@ -25,10 +25,7 @@ from urllib.request import urlopen
 from urllib.error import URLError, HTTPError
 
 from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.openapi.utils import get_openapi
 from fastapi.middleware.cors import CORSMiddleware
-from langserve import add_routes
-from langchain_core.runnables import RunnableLambda
 from pydantic import BaseModel
 import uuid
 
@@ -53,12 +50,6 @@ FILES_SETTINGS = {
 ANALYSIS_SETTINGS = {
     "confidence_threshold": 0.0,
     "default_language": "ru",
-}
-
-LANGSERVE_SETTINGS = {
-    "path": "/langserve",
-    "playground_type": "default",
-    "enable_feedback_endpoint": False,
 }
 
 
@@ -180,6 +171,17 @@ def resolve_image_source(image_path: str | None, image_base64: str | None, filen
     raise HTTPException(status_code=400, detail="Укажите image_path, image_base64 или image_url")
 
 
+def compute_image_analysis_by_path(image_path: str) -> Dict[str, Any]:
+    if analyzer is None:
+        raise HTTPException(status_code=500, detail="Анализатор не инициализирован")
+
+    api_logger.info(f"[ANALYSIS] Запускаю анализ изображения: {image_path}")
+    analysis = analyzer.analyze_image(image_path)
+    if analysis.get("error"):
+        api_logger.error(f"[ANALYSIS] Ошибка анализа изображения: {analysis['error']}")
+    return {"analysis": analysis}
+
+
 def compute_full_analysis_by_path(image_path: str) -> Dict[str, Any]:
     if analyzer is None or food_searcher is None:
         raise HTTPException(status_code=500, detail="Анализаторы не инициализированы")
@@ -218,7 +220,7 @@ JOB_TASKS: dict[str, asyncio.Task] = {}
 
 
 async def process_job(job_id: str) -> None:
-    """Фоновая обработка задачи полного анализа."""
+    """Фоновая обработка задачи анализа (analysis | full)."""
     api_logger.info(f"[JOB] Старт обработки job={job_id}")
     update_job_status(job_id, "processing", None)
 
@@ -238,12 +240,16 @@ async def process_job(job_id: str) -> None:
     image_base64_in = params.get("image_base64")
     filename_in = params.get("filename")
     image_url_in = params.get("image_url") or job.get("image_url")
+    mode = (params.get("params") or {}).get("mode", "full")
 
     temp_created = False
     resolved_path = ""
     try:
         resolved_path, temp_created = resolve_image_source(image_path_in, image_base64_in, filename_in, image_url_in)
-        result = compute_full_analysis_by_path(resolved_path)
+        if mode == "analysis":
+            result = compute_image_analysis_by_path(resolved_path)
+        else:
+            result = compute_full_analysis_by_path(resolved_path)
         if result.get("analysis", {}).get("error"):
             update_job_status(job_id, "error", str(result["analysis"].get("error")))
             return
@@ -437,7 +443,7 @@ class ImageAnalysisRequest(BaseModel):
 
 
 class ImageAnalysisResponse(BaseModel):
-    """Модель ответа с результатами анализа."""
+    """Сохранено для совместимости (не используется напрямую)."""
     dishes: list[Dict[str, Any]]
     confidence: float
     error: str | None = None
@@ -568,180 +574,41 @@ def _save_base64_image(image_base64: str, filename: str) -> str:
     return str(temp_path)
 
 
-@app.post("/api/v1/analyze", response_model=ImageAnalysisResponse, tags=["analysis"])
-async def analyze_image(request: ImageAnalysisRequest) -> ImageAnalysisResponse:
-    """
-    Анализирует изображение еды.
-
-    Args:
-        request: Запрос с путем к изображению или base64 данными
-
-    Returns:
-        Результат анализа изображения
-    """
-    api_logger.info(f"[ANALYZE] Получен запрос на анализ изображения | filename: {request.filename}")
-
-    if analyzer is None:
-        api_logger.error("[ANALYZE] Анализатор не инициализирован")
-        raise HTTPException(status_code=500, detail="Анализатор не инициализирован")
-
-    try:
-        # Определяем путь к изображению
-        if request.image_path:
-            image_path = request.image_path
-            api_logger.info(f"[ANALYZE] Использую локальный файл: {image_path}")
-        elif request.image_base64:
-            if not request.filename:
-                api_logger.error("[ANALYZE] Не указан filename для base64 изображения")
-                raise HTTPException(status_code=400, detail="Для base64 изображения нужен filename")
-            image_path = _save_base64_image(request.image_base64, request.filename)
-            api_logger.info(f"[ANALYZE] Сохранено base64 изображение: {image_path}")
-        else:
-            api_logger.error("[ANALYZE] Не указан путь к изображению или base64 данные")
-            raise HTTPException(status_code=400, detail="Укажите image_path или image_base64")
-
-        # Анализируем изображение
-        api_logger.info(f"[ANALYZE] Начинаю анализ изображения: {image_path}")
-        result = analyzer.analyze_image(image_path)
-
-        # Логируем результат
-        if result.get("error"):
-            api_logger.error(f"[ANALYZE] Ошибка анализа: {result['error']}")
-        else:
-            dishes_count = len(result.get("dishes", []))
-            confidence = result.get("confidence", 0)
-            api_logger.info(f"[ANALYZE] Анализ завершен | блюд: {dishes_count} | уверенность: {confidence:.2%}")
-
-        # Удаляем временный файл если создавали
-        if request.image_base64:
-            try:
-                os.remove(image_path)
-                api_logger.debug(f"[ANALYZE] Удален временный файл: {image_path}")
-            except Exception as cleanup_error:
-                api_logger.warning(f"[ANALYZE] Не удалось удалить временный файл {image_path}: {cleanup_error}")
-
-        return ImageAnalysisResponse(**result)
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        api_logger.error(f"[ANALYZE] Неожиданная ошибка: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+@app.post("/api/v1/analyze", response_model=JobCreateResponse, tags=["analysis"])
+async def analyze_image_async(request: ImageAnalysisRequest) -> JobCreateResponse:
+    """Асинхронный анализ изображения: ставит задачу (mode=analysis) и возвращает job_id."""
+    if not (request.image_path or request.image_base64 or request.filename or request):
+        raise HTTPException(status_code=400, detail="Укажите image_path или image_base64")
+    params: Dict[str, Any] = {
+        "image_path": request.image_path,
+        "image_base64": request.image_base64,
+        "filename": request.filename,
+        "params": {"mode": "analysis"},
+    }
+    job_id = insert_job(None, params)
+    JOB_TASKS[job_id] = asyncio.create_task(process_job(job_id))
+    return JobCreateResponse(job_id=job_id, status="queued")
 
 
-@app.post("/api/v1/analyze-nutrients", tags=["nutrients"])
-async def analyze_nutrients(request: FoodSearchRequest) -> Dict[str, Any]:
-    """
-    Анализ питательных веществ блюда через Edamam Food Database API.
-
-    Args:
-        request: Запрос с названием блюда
-
-    Returns:
-        Результат анализа питательных веществ
-    """
-    api_logger.info(f"[NUTRIENTS] Запрос анализа нутриентов | блюдо: '{request.dish}' | количество: {request.amount} {request.unit}")
-
-    if food_searcher is None:
-        api_logger.error("[NUTRIENTS] Поисковик еды не инициализирован")
-        raise HTTPException(status_code=500, detail="Поисковик еды не инициализирован")
-
-    try:
-        result = food_searcher.analyze_dish_nutrients(request.dish, request.amount, request.unit)
-
-        # Логируем результат
-        if result.get("error"):
-            api_logger.error(f"[NUTRIENTS] Ошибка анализа нутриентов для '{request.dish}': {result['error']}")
-        else:
-            calories = result.get("calories", 0)
-            protein = result.get("protein", 0)
-            api_logger.info(f"[NUTRIENTS] Анализ завершен для '{request.dish}' | калории: {calories:.1f} ккал | белки: {protein:.1f} г")
-
-        return result
-    except Exception as e:
-        api_logger.error(f"[NUTRIENTS] Неожиданная ошибка при анализе '{request.dish}': {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+# Удалён синхронный эндпоинт нутриентов: нутриенты считаются только в режиме полной задачи
 
 
-@app.post("/api/v1/analyze-full", tags=["analysis"])
-async def analyze_full(request: ImageAnalysisRequest) -> Dict[str, Any]:
-    """
-    Комбинированный эндпоинт: принимает изображение, определяет блюда и
-    рассчитывает нутриенты для всех найденных блюд одним запросом.
+@app.post("/api/v1/analyze-full", response_model=JobCreateResponse, tags=["analysis"])
+async def analyze_full_async(request: ImageAnalysisRequest) -> JobCreateResponse:
+    """Асинхронный полный анализ изображения: ставит задачу (mode=full) и возвращает job_id."""
+    if not (request.image_path or request.image_base64 or request.filename or request):
+        raise HTTPException(status_code=400, detail="Укажите image_path или image_base64")
+    params: Dict[str, Any] = {
+        "image_path": request.image_path,
+        "image_base64": request.image_base64,
+        "filename": request.filename,
+        "params": {"mode": "full"},
+    }
+    job_id = insert_job(None, params)
+    JOB_TASKS[job_id] = asyncio.create_task(process_job(job_id))
+    return JobCreateResponse(job_id=job_id, status="queued")
 
-    Возвращает объект вида:
-      {
-        "analysis": ImageAnalysisResponse,
-        "nutrients": Dict[str, Any]
-      }
-    """
-    api_logger.info("[FULL] Получен запрос на полный анализ изображения")
-
-    try:
-        image_path, is_temp = resolve_image_source(
-            request.image_path,
-            request.image_base64,
-            request.filename,
-            None,
-        )
-        result = compute_full_analysis_by_path(image_path)
-        return result
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        api_logger.error(f"[FULL] Неожиданная ошибка: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        # Чистим временный файл (если был создан из base64)
-        try:
-            if request.image_base64 and 'image_path' in locals():
-                os.remove(image_path)  # type: ignore[arg-type]
-        except Exception:
-            pass
-
-@app.post("/api/v1/analyze-multiple-nutrients", tags=["nutrients"])
-async def analyze_multiple_nutrients(request: MultipleDishesRequest) -> Dict[str, Any]:
-    """
-    Анализ питательных веществ множественных блюд через Edamam Food Database API.
-    Отправляет один запрос к LLM для всех блюд вместо отдельных запросов.
-
-    Args:
-        request: Запрос со списком блюд
-
-    Returns:
-        Результат анализа питательных веществ для всех блюд
-    """
-    dishes_str = ", ".join([f"'{dish.dish}'" for dish in request.dishes[:3]])
-    if len(request.dishes) > 3:
-        dishes_str += f" и ещё {len(request.dishes) - 3} блюд"
-
-    api_logger.info(f"[MULTIPLE_NUTRIENTS] Запрос анализа нутриентов множественных блюд | блюд: {len(request.dishes)} | {dishes_str}")
-
-    if food_searcher is None:
-        api_logger.error("[MULTIPLE_NUTRIENTS] Поисковик еды не инициализирован")
-        raise HTTPException(status_code=500, detail="Поисковик еды не инициализирован")
-
-    try:
-        result = food_searcher.analyze_multiple_dishes_nutrients(request.dishes)
-
-        # Логируем результат
-        if result.get("error"):
-            api_logger.error(f"[MULTIPLE_NUTRIENTS] Ошибка анализа множественных нутриентов: {result['error']}")
-        else:
-            total_dishes = result.get("total_dishes", 0)
-            successful_dishes = result.get("successful_dishes", 0)
-            failed_dishes = result.get("failed_dishes", 0)
-
-            # Считаем общие калории
-            total_calories = sum([dish.get("calories", 0) for dish in result.get("dishes", [])])
-
-            api_logger.info(f"[MULTIPLE_NUTRIENTS] Анализ завершен | всего блюд: {total_dishes} | успешно: {successful_dishes} | ошибки: {failed_dishes} | общие калории: {total_calories:.1f} ккал")
-
-        return result
-    except Exception as e:
-        api_logger.error(f"[MULTIPLE_NUTRIENTS] Неожиданная ошибка при анализе множественных блюд: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+# Удалён эндпоинт множественного анализа нутриентов (не используется в асинхронной модели)
 
 
 @app.get("/api/v1/health", tags=["health"])
@@ -759,132 +626,7 @@ async def health_check():
     return status
 
 
-# Создаем цепочки для LangServe
-def create_langserve_chain():
-    """Создает цепочку для LangServe."""
-
-    def analyze_wrapper(inputs: Dict[str, Any]) -> Dict[str, Any]:
-        """Обертка для анализа изображения."""
-        if analyzer is None:
-            return {"error": "Анализатор не инициализирован"}
-
-        image_path = inputs.get("image_path")
-        if not image_path:
-            return {"error": "Не указан путь к изображению"}
-
-        return analyzer.analyze_image(image_path)
-
-    return RunnableLambda(analyze_wrapper)
-
-
-def create_nutrient_analysis_chain():
-    """Создает цепочку для анализа питательных веществ через Edamam API."""
-
-    def analysis_wrapper(inputs: Dict[str, Any]) -> Dict[str, Any]:
-        """Обертка для анализа питательных веществ блюда."""
-        if food_searcher is None:
-            return {"error": "Анализатор питательных веществ не инициализирован"}
-
-        dish = inputs.get("dish")
-        amount = inputs.get("amount", 100)
-        unit = inputs.get("unit", "грамм")
-
-        if not dish:
-            return {"error": "Не указано блюдо для анализа"}
-
-        result = food_searcher.analyze_dish_nutrients(dish, amount, unit)
-
-        # Возвращаем результат как есть (либо nutrients, либо error)
-        return result
-
-    return RunnableLambda(analysis_wrapper)
-
-
-def create_multiple_nutrient_analysis_chain():
-    """Создает цепочку для анализа питательных веществ множественных блюд через Edamam API."""
-
-    def multiple_analysis_wrapper(inputs: Dict[str, Any]) -> Dict[str, Any]:
-        """Обертка для анализа питательных веществ множественных блюд."""
-        if food_searcher is None:
-            return {"error": "Анализатор питательных веществ не инициализирован"}
-
-        dishes_data = inputs.get("dishes", [])
-        if not dishes_data:
-            return {"error": "Не указаны блюда для анализа"}
-
-        # Преобразуем входные данные в список MultipleDishItem
-        dishes = []
-        for dish_data in dishes_data:
-            if isinstance(dish_data, dict):
-                dishes.append(MultipleDishItem(
-                    dish=dish_data.get("dish", ""),
-                    amount=dish_data.get("amount", 100),
-                    unit=dish_data.get("unit", "gram")
-                ))
-
-        if not dishes:
-            return {"error": "Некорректный формат данных о блюдах"}
-
-        result = food_searcher.analyze_multiple_dishes_nutrients(dishes)
-
-        # Возвращаем результат как есть
-        return result
-
-    return RunnableLambda(multiple_analysis_wrapper)
-
-
-# Добавляем LangServe маршруты
-add_routes(
-    app,
-    create_langserve_chain(),
-    path=LANGSERVE_SETTINGS["path"],
-    playground_type=LANGSERVE_SETTINGS["playground_type"]
-)
-
-# Добавляем цепочку анализа питательных веществ
-add_routes(
-    app,
-    create_nutrient_analysis_chain(),
-    path="/api/v1/analyze-nutrients",
-    playground_type=LANGSERVE_SETTINGS["playground_type"]
-)
-
-# Добавляем цепочку анализа питательных веществ для множественных блюд
-add_routes(
-    app,
-    create_multiple_nutrient_analysis_chain(),
-    path="/api/v1/analyze-multiple-nutrients",
-    playground_type=LANGSERVE_SETTINGS["playground_type"]
-)
-
-
-# Кастомная генерация OpenAPI: скрываем LangServe эндпоинты из документации
-def custom_openapi():
-    schema = get_openapi(
-        title=app.title,
-        version=app.version,
-        description=app.description,
-        routes=app.routes,
-    )
-
-    paths = schema.get("paths", {})
-
-    def _is_langserve_path(path: str) -> bool:
-        if path.startswith("/langserve"):
-            return True
-        if path.startswith("/api/v1/analyze-nutrients/"):
-            return True
-        if path.startswith("/api/v1/analyze-multiple-nutrients/"):
-            return True
-        return False
-
-    filtered_paths = {p: v for p, v in paths.items() if not _is_langserve_path(p)}
-    schema["paths"] = filtered_paths
-    app.openapi_schema = schema
-    return app.openapi_schema
-
-
-app.openapi = custom_openapi
+# Убраны LangServe цепочки и кастомизация OpenAPI — остаются только асинхронные REST эндпоинты
 
 
 @app.post("/api/v1/jobs", response_model=JobCreateResponse, tags=["jobs"])

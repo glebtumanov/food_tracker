@@ -14,6 +14,8 @@ const uploadUrl = "/upload";
 const saveAnalysisUrl = "/save_analysis";
 const analyzeImageUrl = "/analyze_image";
 const analyzeNutrientsUrl = "/analyze_nutrients";
+const queueAnalysisUrl = "/queue_analysis";
+const queueNutrientsUrl = "/queue_nutrients";
 const SINGLE_REQUEST_MODE = Boolean(window.__FEATURES__ && window.__FEATURES__.single_request_mode);
 
 // Текущие данные загрузки
@@ -96,6 +98,12 @@ function updatePreview(url, uploadId = null) {
   if (currentFilename) {
     loadSavedAnalysis(currentFilename);
   }
+
+  // Удаляем возможные нотификации-заменители кнопок
+  const oldNotices = buttonContainer.querySelectorAll('.job-notice');
+  oldNotices.forEach(n => n.remove());
+  if (analyzeButton) analyzeButton.style.display = SINGLE_REQUEST_MODE ? 'none' : 'inline-block';
+  if (nutrientsButton) nutrientsButton.style.display = 'inline-block';
 }
 
 async function uploadFile(file) {
@@ -244,6 +252,15 @@ async function loadSavedAnalysis(filename) {
         }
       }
 
+      // Если результата анализа нет, но есть активные джобы — покажем статус
+      if ((!data.ingredients_md || !data.ingredients_md.trim()) && (data.job_id_analysis || data.job_id_full)) {
+        const stA = data.job_status_analysis;
+        const stF = data.job_status_full;
+        if ((stA && stA !== 'done' && stA !== 'error') || (stF && stF !== 'done' && stF !== 'error')) {
+          showInfoAlert("Запрос отправлен. Обновите страницу позже, чтобы увидеть результат.");
+        }
+      }
+
       // Если есть сохраненные данные нутриентов, отображаем их
       if (data.nutrients_json && Array.isArray(data.nutrients_json) && data.nutrients_json.length > 0) {
         // Конвертируем данные в формат, который ожидает renderNutrientResults
@@ -261,6 +278,13 @@ async function loadSavedAnalysis(filename) {
         }));
 
         renderNutrientResults(nutrientResults);
+      }
+
+      // Если есть активная задача, и она не завершена — заменим кнопку на уведомление
+      const hasActiveJob = ((data.job_id_full && data.job_status_full && data.job_status_full !== 'done' && data.job_status_full !== 'error') ||
+                           (data.job_id_analysis && data.job_status_analysis && data.job_status_analysis !== 'done' && data.job_status_analysis !== 'error'));
+      if (hasActiveJob) {
+        showInfoAlert("Запрос отправлен. Обновите страницу позже, чтобы увидеть результат.");
       }
     }
   } catch (err) {
@@ -788,12 +812,13 @@ function renderNutrientResults(results) {
 
 // Обработчик клика на кнопку анализа
 if (analyzeButton && !SINGLE_REQUEST_MODE) {
-  analyzeButton.addEventListener("click", analyzeImage);
+  analyzeButton.addEventListener("click", queueAnalyzeAsync);
 }
 
 // Обработчик клика на кнопку нутриентов
 if (nutrientsButton) {
-  nutrientsButton.addEventListener("click", SINGLE_REQUEST_MODE ? analyzeImage : analyzeNutrients);
+  // Всегда ставим задачу полного анализа на нутриенты
+  nutrientsButton.addEventListener("click", queueNutrientsAsync);
 }
 
 // -----------------------------------------------------------------------------
@@ -801,4 +826,106 @@ if (nutrientsButton) {
 // -----------------------------------------------------------------------------
 if (window.PRELOAD_URL) {
   updatePreview(window.PRELOAD_URL);
+}
+
+// -----------------------------------------------------------------------------
+// Асинхронные очереди: постановка задач и уведомление пользователя
+// -----------------------------------------------------------------------------
+async function queueAnalyzeAsync() {
+  if (!currentUploadId) return;
+  const triggerBtn = SINGLE_REQUEST_MODE ? nutrientsButton : analyzeButton;
+  try {
+    // Показать сообщение немедленно, ещё до запроса
+    showInfoAlert("Запрос отправлен. Обновите страницу позже, чтобы увидеть результат.");
+    if (triggerBtn) {
+      triggerBtn.disabled = true;
+      triggerBtn.textContent = "Отправляем...";
+    }
+    const resp = await fetch(queueAnalysisUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ upload_id: currentUploadId }),
+      keepalive: true
+    });
+    const data = await resp.json();
+    if (resp.ok && data.queued) {
+      // Уже показали оповещение. Ничего не делаем.
+    } else {
+      showErrorAlert(data.error || "Не удалось поставить задачу в очередь");
+    }
+  } catch (e) {
+    console.error(e);
+    showErrorAlert("Ошибка соединения. Попробуйте позже.");
+  } finally {
+    if (triggerBtn) {
+      triggerBtn.disabled = false;
+      triggerBtn.textContent = SINGLE_REQUEST_MODE ? "Определить нутриенты" : "Определить еду на картинке";
+    }
+  }
+}
+
+async function queueNutrientsAsync() {
+  if (!currentUploadId) return;
+  try {
+    // Показать сообщение немедленно, ещё до запроса
+    showInfoAlert("Запрос отправлен. Обновите страницу позже, чтобы увидеть результат.");
+    nutrientsButton.disabled = true;
+    nutrientsButton.textContent = "Отправляем...";
+    const resp = await fetch(queueNutrientsUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ upload_id: currentUploadId }),
+      keepalive: true
+    });
+    const data = await resp.json();
+    if (resp.ok && data.queued) {
+      // Уже показали оповещение. Ничего не делаем.
+    } else {
+      showErrorAlert(data.error || "Не удалось поставить задачу в очередь");
+    }
+  } catch (e) {
+    console.error(e);
+    showErrorAlert("Ошибка соединения. Попробуйте позже.");
+  } finally {
+    nutrientsButton.disabled = false;
+    nutrientsButton.textContent = "Определить нутриенты";
+  }
+}
+
+function showInfoAlert(message) {
+  // Отрисовываем подсказку вместо нажатой кнопки
+  const notice = document.createElement('div');
+  notice.className = 'alert alert-info job-notice';
+  notice.innerHTML = `
+    <h6 class="alert-heading">📤 Запрос отправлен</h6>
+    <p class="mb-0">${message}</p>
+  `;
+  if (SINGLE_REQUEST_MODE) {
+    if (nutrientsButton) {
+      nutrientsButton.style.display = 'none';
+      nutrientsButton.insertAdjacentElement('afterend', notice);
+    } else if (analysisResult) {
+      analysisResult.innerHTML = notice.outerHTML;
+      analysisResult.style.display = 'block';
+    }
+  } else {
+    if (analyzeButton) {
+      analyzeButton.style.display = 'none';
+      analyzeButton.insertAdjacentElement('afterend', notice);
+    } else if (analysisResult) {
+      analysisResult.innerHTML = notice.outerHTML;
+      analysisResult.style.display = 'block';
+    }
+  }
+}
+
+function showErrorAlert(message) {
+  if (!analysisResult) return;
+  analysisResult.innerHTML = `
+    <div class="alert alert-danger" role="alert">
+      <h6 class="alert-heading">❌ Ошибка</h6>
+      <p class="mb-0">${message}</p>
+    </div>
+  `;
+  analysisResult.style.display = "block";
 }

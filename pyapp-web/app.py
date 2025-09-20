@@ -86,6 +86,9 @@ class Upload(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
     # Результат анализа нутриентов в формате JSON
     nutrients_json = db.Column(db.Text, nullable=True)
+    # Асинхронные задания chain-server
+    job_id_analysis = db.Column(db.String(64), nullable=True)
+    job_id_full = db.Column(db.String(64), nullable=True)
 
 @login_manager.user_loader  # type: ignore
 def load_user(user_id: str):
@@ -539,6 +542,11 @@ def create_app() -> Flask:
 
         if "nutrients_json" not in upload_cols:
             alter_stmts.append("ALTER TABLE upload ADD COLUMN nutrients_json TEXT;")
+        # Новые поля для асинхронной очереди задач
+        if "job_id_analysis" not in upload_cols:
+            alter_stmts.append("ALTER TABLE upload ADD COLUMN job_id_analysis VARCHAR(64);")
+        if "job_id_full" not in upload_cols:
+            alter_stmts.append("ALTER TABLE upload ADD COLUMN job_id_full VARCHAR(64);")
 
         if alter_stmts:
             with engine.begin() as conn:
@@ -706,6 +714,165 @@ def create_app() -> Flask:
 
         return jsonify({"success": True})
 
+    # ----------------------------- Очередь задач -----------------------------
+
+    def _chain_base_url_timeout() -> tuple[str, int]:
+        chain_config = config.get("chain_server", {})
+        chain_url = chain_config.get("url", "http://localhost:8000")
+        timeout = chain_config.get("timeout", 45)
+        return chain_url, timeout
+
+    def _encode_image_to_base64(image_path: str) -> str:
+        with open(image_path, "rb") as image_file:
+            return base64.b64encode(image_file.read()).decode("utf-8")
+
+    def _create_chain_job(image_path: str, filename: str, mode: str) -> tuple[bool, str | None, str | None]:
+        """Создаёт задачу на chain‑server. Возвращает (ok, job_id, error_msg)."""
+        chain_url, timeout = _chain_base_url_timeout()
+        try:
+            payload = {
+                "image_base64": _encode_image_to_base64(image_path),
+                "filename": filename,
+                "params": {"mode": mode},
+            }
+            resp = requests.post(
+                f"{chain_url}/api/v1/jobs",
+                json=payload,
+                timeout=timeout,
+                headers={"Content-Type": "application/json"}
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                return True, data.get("job_id"), None
+            try:
+                data = resp.json()
+                return False, None, data.get("detail") or f"HTTP {resp.status_code}"
+            except Exception:
+                return False, None, f"HTTP {resp.status_code}"
+        except requests.RequestException as e:
+            return False, None, str(e)
+
+    def _fetch_job_status(job_id: str) -> dict[str, Any] | None:
+        chain_url, timeout = _chain_base_url_timeout()
+        try:
+            resp = requests.get(f"{chain_url}/api/v1/jobs/{job_id}", timeout=timeout)
+            if resp.status_code == 200:
+                return resp.json()
+            return None
+        except requests.RequestException:
+            return None
+
+    def _maybe_ingest_job_result(upload_record: Upload) -> None:
+        """Если у загрузки есть job_id и результатов нет — подтянуть их из chain‑server и сохранить."""
+        job_id = upload_record.job_id_full or upload_record.job_id_analysis
+        if not job_id:
+            return
+        # Если анализ уже сохранён, проверим только нутриенты для полного режима
+        if upload_record.ingredients_json and upload_record.ingredients_md and not upload_record.job_id_full:
+            return
+        status = _fetch_job_status(job_id)
+        if not status or status.get("status") != "done":
+            return
+        result = status.get("result") or {}
+
+        # Сохраняем анализ
+        analysis_payload = result.get("analysis") or {}
+        if analysis_payload and not (upload_record.ingredients_json and upload_record.ingredients_md):
+            dishes = analysis_payload.get("dishes", [])
+            confidence = analysis_payload.get("confidence", 0)
+            md = f"**Результат анализа изображения:**\n\n"
+            md += f"**Уверенность:** {confidence:.1%}\n\n"
+            md += "**Обнаруженные блюда:**\n\n"
+            for i, dish in enumerate(dishes, 1):
+                name = dish.get("name", "Неизвестное блюдо")
+                name_en = dish.get("name_en", "")
+                unit_type = dish.get("unit_type", "")
+                amount = dish.get("amount", 0)
+                md += f"{i}. **{name}**"
+                if name_en:
+                    md += f" _{name_en}_"
+                if unit_type and amount:
+                    if unit_type == "штук":
+                        md += f" — {amount:.0f} {unit_type}"
+                    else:
+                        md += f" — {amount} {unit_type}"
+                md += "\n\n"
+
+            upload_record.ingredients_md = md
+            upload_record.ingredients_json = json.dumps(analysis_payload, indent=2, ensure_ascii=False)
+
+        # Сохраняем нутриенты только для полного режима
+        if upload_record.job_id_full and not upload_record.nutrients_json:
+            nutrients = result.get("nutrients")
+            if nutrients and nutrients.get("dishes") is not None:
+                nutrients_data = []
+                # Берём список блюд из analysis, чтобы сопоставить
+                analysis_json = {}
+                try:
+                    if upload_record.ingredients_json:
+                        analysis_json = json.loads(upload_record.ingredients_json)
+                except json.JSONDecodeError:
+                    analysis_json = {}
+                dishes_list = analysis_json.get("dishes", []) if isinstance(analysis_json, dict) else []
+                for i, dish_result in enumerate(nutrients.get("dishes", [])):
+                    corresponding_dish = dishes_list[i] if i < len(dishes_list) else {}
+                    nutrients_entry = {
+                        "dish": corresponding_dish.get("name_en") or corresponding_dish.get("name") or f"Блюдо {i+1}",
+                        "amount": corresponding_dish.get("amount", 100),
+                        # Сохраняем единицу так, как есть в анализе (рус.) — UI корректно отобразит
+                        "unit": corresponding_dish.get("unit_type", "грамм"),
+                        "nutrients": dish_result,
+                        "analyzed_at": datetime.utcnow().isoformat()
+                    }
+                    nutrients_data.append(nutrients_entry)
+                upload_record.nutrients_json = json.dumps(nutrients_data, indent=2, ensure_ascii=False)
+
+        db.session.commit()
+
+    @app.post("/queue_analysis")
+    @login_required
+    def queue_analysis():  # type: ignore
+        if not current_user.is_confirmed:
+            return jsonify({"error": "Подтвердите email"}), 403
+        data = request.get_json() or {}
+        upload_id = data.get("upload_id")
+        if not upload_id:
+            return jsonify({"error": "ID загрузки не указан"}), 400
+        upload_record = db.get_or_404(Upload, upload_id)
+        if upload_record.user_id != current_user.id:
+            return jsonify({"error": "Доступ запрещен"}), 403
+        image_path = os.path.join(app.config["UPLOAD_FOLDER"], upload_record.filename)
+        if not os.path.exists(image_path):
+            return jsonify({"error": "Файл изображения не найден"}), 404
+        ok, job_id, err = _create_chain_job(image_path, upload_record.filename, mode="analysis")
+        if not ok or not job_id:
+            return jsonify({"error": err or "Не удалось создать задачу"}), 500
+        upload_record.job_id_analysis = job_id
+        db.session.commit()
+        return jsonify({"queued": True, "job_id": job_id, "message": "Запрос отправлен. Обновите страницу позже."})
+
+    @app.post("/queue_nutrients")
+    @login_required
+    def queue_nutrients():  # type: ignore
+        if not current_user.is_confirmed:
+            return jsonify({"error": "Подтвердите email"}), 403
+        data = request.get_json() or {}
+        upload_id = data.get("upload_id")
+        if not upload_id:
+            return jsonify({"error": "ID загрузки не указан"}), 400
+        upload_record = db.get_or_404(Upload, upload_id)
+        if upload_record.user_id != current_user.id:
+            return jsonify({"error": "Доступ запрещен"}), 403
+        image_path = os.path.join(app.config["UPLOAD_FOLDER"], upload_record.filename)
+        if not os.path.exists(image_path):
+            return jsonify({"error": "Файл изображения не найден"}), 404
+        ok, job_id, err = _create_chain_job(image_path, upload_record.filename, mode="full")
+        if not ok or not job_id:
+            return jsonify({"error": err or "Не удалось создать задачу"}), 500
+        upload_record.job_id_full = job_id
+        db.session.commit()
+        return jsonify({"queued": True, "job_id": job_id, "message": "Запрос отправлен. Обновите страницу позже."})
+
     @app.get("/get_analysis/<path:filename>")
     @login_required
     def get_analysis(filename: str):  # type: ignore
@@ -717,7 +884,13 @@ def create_app() -> Flask:
             )
         )
 
-        # Декодируем JSON если он есть
+        # Сначала подтягиваем результаты задач (если готовы), затем читаем актуальные данные
+        try:
+            _maybe_ingest_job_result(upload_record)
+        except Exception as _:
+            pass
+
+        # Декодируем JSON если он есть (после возможного обновления)
         ingredients_json = None
         if upload_record.ingredients_json:
             ingredients_json = json.loads(upload_record.ingredients_json)
@@ -726,11 +899,25 @@ def create_app() -> Flask:
         if upload_record.nutrients_json:
             nutrients_json = json.loads(upload_record.nutrients_json)
 
+        # Получим актуальные статусы задач, если есть
+        job_status_analysis = None
+        job_status_full = None
+        if upload_record.job_id_analysis:
+            status = _fetch_job_status(upload_record.job_id_analysis)
+            job_status_analysis = status.get("status") if status else None
+        if upload_record.job_id_full:
+            status = _fetch_job_status(upload_record.job_id_full)
+            job_status_full = status.get("status") if status else None
+
         return jsonify({
             "ingredients_md": upload_record.ingredients_md,
             "ingredients_json": ingredients_json,
             "nutrients_json": nutrients_json,
-            "upload_id": upload_record.id
+            "upload_id": upload_record.id,
+            "job_id_analysis": upload_record.job_id_analysis,
+            "job_id_full": upload_record.job_id_full,
+            "job_status_analysis": job_status_analysis,
+            "job_status_full": job_status_full
         })
 
     @app.post("/analyze_image")
@@ -1031,13 +1218,26 @@ def create_app() -> Flask:
         if upload_record.user_id != current_user.id:
             return jsonify({"error": "Доступ запрещен"}), 403
 
+        # Сначала пробуем подтянуть результат задачи, затем читаем из модели
+        try:
+            _maybe_ingest_job_result(upload_record)
+        except Exception as _:
+            pass
+
         nutrients_json = None
         if upload_record.nutrients_json:
             nutrients_json = json.loads(upload_record.nutrients_json)
 
+        job_status_full = None
+        if upload_record.job_id_full:
+            status = _fetch_job_status(upload_record.job_id_full)
+            job_status_full = status.get("status") if status else None
+
         return jsonify({
             "nutrients_json": nutrients_json,
-            "upload_id": upload_record.id
+            "upload_id": upload_record.id,
+            "job_id_full": upload_record.job_id_full,
+            "job_status_full": job_status_full
         })
 
     # Обработка 413 — превышен размер файла

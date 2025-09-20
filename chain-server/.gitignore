@@ -1,0 +1,6 @@
+jobs.sqlite3
+temp_images/
+__pycache__/
+*.pyc
+logs/
+
